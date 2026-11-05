@@ -168,6 +168,59 @@ After adding table row-splitting and sentence splitting (Apple 10-K):
 
 **Finding:** the two chunking rules fixed the failures they targeted, with no change to the embedding model; T1 confirms that chunking alone cannot fix formula-heavy tables.
 
+---
+
+## Step 2.4: Hybrid search (dense + BM25) and reranking
+
+**Setup**
+- Each chunk stored with two vectors in one Qdrant point: `dense` (bge-small, 384-d, cosine) + `bm25` (sparse, `Qdrant/bm25` via fastembed; Qdrant `IDF` modifier adds word rarity)
+- New collection `docai_chunks` (old `chunks` was dense-only); 5 docs, 792 chunks
+- Modes (`retrieval/search.py`): `dense`, `bm25`, `hybrid` (dense top 20 + BM25 top 20, fused with RRF inside Qdrant), `rerank` (hybrid top 20 → `BAAI/bge-reranker-base` cross-encoder → top 5)
+- `--find "<keyword>"` prints the rank of the first chunk containing the answer keyword in every mode (✅ = top 5)
+
+**Results on the dense failures**
+
+| Test | Dense | BM25 | Hybrid | Rerank |
+|---|---|---|---|---|
+| T1 "complexity of self-attention" (keyword: `Self-Attention (restricted)`) | ❌ 15 | ✅ 1 | ✅ 3 | ✅ 4 |
+| T1 variant "complexity **per layer** of self-attention" | ✅ 4 | ✅ 1 | ✅ 2 | ✅ 3 |
+| T6 "Which year had total net sales of 391,035?" | ✅ 1 | ✅ 1 | ✅ 1 | ✅ 1 |
+| T6b "391,035" | ✅ 3 | ✅ 1 | ✅ 2 | ✅ 1 |
+| T10 Gazette IAS appointment (keyword: `Dilsukh`) | ❌ 21 | ✅ 1 | ✅ 2 | ✅ 4 |
+
+**Findings**
+- Hybrid fixed every text-answerable dense failure: T1 (15 → 3) and T10 (21 → 2) moved into the top 5
+- BM25 alone ranked the answer #1 in every case above: exact words ("Indian Administrative", "391,035", "Self-Attention") are what these questions hinge on
+- Dense is wording-sensitive, BM25 is not: using Table 1's exact column name ("per layer") moved dense from 15 to 4; BM25 stayed #1
+- **The reranker ranked tables and noisy OCR lower than BM25** (T1: 1 → 4, T10: 1 → 4), though always within the top 5. Cross-encoders are trained mostly on prose; Markdown pipes, formulas and OCR errors (`plcascd`, `Scrvice`) lower their confidence. Rerank is not automatically better.
+
+**Regression check (tests dense already passed)**
+
+| Test | Dense | BM25 | Hybrid | Rerank |
+|---|---|---|---|---|
+| T2 employees (`full-time equivalent`) | ✅ 1 | ❌ 6 | ✅ 1 | ✅ 1 |
+| T3 Note 2 (`performance obligations`) | ✅ 1 | ✅ 1 | ✅ 1 | ✅ 1 |
+| T4 Item 1A (`could have a material adverse effect`) | ✅ 1 | ✅ 1 | ✅ 1 | ✅ 1 |
+| T5 BLEU (`28.4`) | ✅ 1 | ✅ 1 | ✅ 1 | ✅ 1 |
+| T7 Services 2025 (`109,158`) | ✅ 2 | ❌ 6 | ✅ 2 | ✅ 2 |
+| T12 EPA clean scan (`public website`) | ✅ 1 | ✅ 1 | ✅ 1 | ✅ 2 |
+| T13 net sales 2026 (`478,834`) | ✅ 2 | ✅ 2 | ✅ 4 | ✅ 1 |
+
+**Summary over all 11 text-answerable tests (T1–T7, T6b, T10, T12, T13)**
+
+| Mode | In top 5 | Mean rank | Misses |
+|---|---|---|---|
+| Dense | 9/11 | | T1, T10 (exact words) |
+| BM25 | 9/11 | | T2, T7 (meaning: "employees" vs "full-time equivalent") |
+| Hybrid | **11/11** | 1.73 | none |
+| Rerank | **11/11** | 1.73 | none |
+
+**Key finding: dense and BM25 fail on different questions; hybrid fails on none.**
+
+**Finding: the reranker gave no measurable gain over hybrid** on this set (same 11/11, same mean rank 1.73): it helped T13 (4 → 1) but lowered tables/OCR (T1 3 → 4, T10 2 → 4), and costs a ~1 GB model plus extra latency. Only 11 questions, so not conclusive → default set to hybrid; rerank kept as an option and re-tested in the Step 4 evaluation.
+
+**Lesson: `--find` keywords must be unique to the answer chunk.** "Complexity per Layer" first gave dense a false rank 1, because Section 4's text also says "the total computational complexity per layer". A row label only in Table 1 ("Self-Attention (restricted)") gave the true rank (15).
+
 ## Where dense retrieval fails: test questions
 
 Run each question in every retrieval mode as it gets built, and fill in the result columns
@@ -175,7 +228,7 @@ Run each question in every retrieval mode as it gets built, and fill in the resu
 
 | ID | Failure type | Question | Doc | Expected answer / page | Dense | Hybrid | +Rerank | ColPali |
 |---|---|---|---|---|---|---|---|---|
-| T1 | Formula table | What is the complexity per layer of self-attention? | Attention | O(n²·d), Table 1, p. 6 | ❌ (table not in top 5) | | | |
+| T1 | Formula table | What is the complexity per layer of self-attention? | Attention | O(n²·d), Table 1, p. 6 | ❌ rank 15 | ✅ 3 | ✅ 4 | |
 | T2 | Tiny chunks | How many employees does Apple have? | 10-K | Human Capital, p. 8 | ✅ #1, but #2/#3 noise | | | |
 | T3 | Exact term | What does Note 2 say about how revenue is recognized? | 10-K | Note 2 – Revenue, p. 41 | ✅ #1 (term is in heading) | | | |
 | T4 | Exact term | What are the risk factors in Item 1A? | 10-K | Item 1A, p. 8 | ✅ #1, 0.828 (term is in heading) | | | |
@@ -184,7 +237,7 @@ Run each question in every retrieval mode as it gets built, and fill in the resu
 | T7 | Number | What were Services net sales in 2025? | 10-K | 109,158, p. 29 / p. 35 | ✅ table #2 (p. 29) | | | |
 | T8 | Chart | Which commodity price index peaks highest and when? | IMF | Energy, ~2026:Q4, index ~150 (Fig 1.9 panel 1, p. 9; chart only) | ❌ p. 9 not in top 5 (found Commodity Special Feature text, pp. 31–39) | | | |
 | T9 | Chart | Which country group had a negative structural primary balance change in 2025? | IMF | Emerging market and developing economies, ~−0.3 pp (Fig 1.9 panel 3, p. 9; chart only) | ❌ p. 9 not in top 5 (found Fig 1.8 Fiscal Policy caption p. 8, trade text, annex table ×3) | | | |
-| T10 | Faded scan | Who was appointed to the Indian Administrative Service? | Gazette | Shri Dilsukh Ram, p. 3 | ❌ rank 21 (#1 was the Central Information Service) | | | |
+| T10 | Faded scan | Who was appointed to the Indian Administrative Service? | Gazette | Shri Dilsukh Ram, p. 3 | ❌ rank 21 (#1 was the Central Information Service) | ✅ 2 | ✅ 4 | |
 | T11 | Faded scan | Who was granted earned leave for 17 days? | Gazette | Shri S. S. Saith, p. 4 | ❌ not in top 30: OCR destroyed "earned leave for 17 days" → text-only methods cannot answer; ColPali-only test | | | |
 | T6b | Number only | 391,035 | 10-K | p. 29 / p. 35 tables | ⚠️ weak: p. 35 at #3 by chance, p. 29 missing, flat scores 0.60–0.64 | | | |
 | T13 | Wording sensitivity | What were Apple's total net sales in 2026? | 10-K | $478,834M, p. 35 / p. 42 | ❌ before rule 6 → ✅ after (table #2) | | | |

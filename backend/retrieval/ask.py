@@ -4,6 +4,7 @@ Step 2.3 — Answer questions with Gemini, using retrieved chunks, with page cit
 Usage (run from backend/):
     python -m retrieval.ask "What is the complexity of self-attention?"
     python -m retrieval.ask "How many employees does Apple have?" --doc f9a3e5b32cb7cbf2
+    python -m retrieval.ask "391,035" --doc f9a3e5b32cb7cbf2 --mode dense   # compare modes
 
 Needs a .env file in backend/ with:
     GEMINI_API_KEY=your_key
@@ -18,7 +19,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import errors, types
 
-from ingest.index import get_client, search   # Step 2.2
+from retrieval.search import MODES, search   # Step 2.4: dense / bm25 / hybrid / rerank
 
 load_dotenv()
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
@@ -57,10 +58,8 @@ def build_prompt(question: str, hits: list[dict]) -> str:
     return f"Sources:\n\n{sources}\n\n---\n\nQuestion: {question}"
 
 
-def answer(question: str, doc_id: str | None = None, k: int = TOP_K):
-    qdrant = get_client()
-    hits = search(question, qdrant, k=k, doc_id=doc_id)   # 1. retrieve
-    qdrant.close()
+def answer(question: str, doc_id: str | None = None, k: int = TOP_K, mode: str = "hybrid"):
+    hits = search(question, k=k, doc_id=doc_id, mode=mode)   # 1. retrieve
 
     prompt = build_prompt(question, hits)                  # 2. build prompt
     return hits, generate(prompt)                          # 3. generate (streaming)
@@ -106,10 +105,11 @@ if __name__ == "__main__":
     ap.add_argument("question")
     ap.add_argument("--doc", default=None)
     ap.add_argument("--k", type=int, default=TOP_K)
+    ap.add_argument("--mode", choices=MODES, default="hybrid", help="retrieval mode")
     ap.add_argument("--show-sources", action="store_true", help="print the retrieved chunks")
     args = ap.parse_args()
 
-    hits, stream = answer(args.question, args.doc, args.k)
+    hits, stream = answer(args.question, args.doc, args.k, args.mode)
 
     print(f"\nQ: {args.question}\n\nA: ", end="", flush=True)
     try:
@@ -118,7 +118,7 @@ if __name__ == "__main__":
     except RuntimeError as e:
         print(f"\n[error] {e}")
 
-    print("\n\nRetrieved sources:")
+    print(f"\n\nRetrieved sources ({args.mode}):")
     for i, h in enumerate(hits, 1):
         print(f"  {i}. {h['type']:<6} pages {h['pages']}  score {h['score']}  — {h['heading'][:60]}")
         if args.show_sources:
