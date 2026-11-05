@@ -1,5 +1,7 @@
 pymupdf>=1.24
 docling>=2.15
+fastembed>=0.4
+qdrant-client>=1.12
 fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
