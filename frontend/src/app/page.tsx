@@ -1,11 +1,13 @@
 "use client";
 
 // Main screen: documents | PDF viewer | chat.
-// 3.4a documents ✓ · 3.4b viewer ✓ · 3.4c chat (placeholder)
+// 3.4a documents ✓ · 3.4b viewer ✓ · 3.4c chat ✓ · 3.4d clickable citations (next)
 
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
+import ChatPanel from "@/components/ChatPanel";
 import DocumentSidebar from "@/components/DocumentSidebar";
+import "./chat.css";
 import { DocumentDetails, DocumentSummary, getDetails } from "@/lib/api";
 
 // PDF.js only runs in the browser, so the viewer is loaded on the client only.
@@ -56,8 +58,9 @@ export default function Home() {
         )}
       </section>
 
-      <section className="flex min-h-0 items-center justify-center">
-        <p className="text-sm text-neutral-400">Chat (Step 3.4c)</p>
+      <section className="min-h-0 min-w-0">
+        {/* key: a new document starts a fresh chat */}
+        <ChatPanel key={docId ?? "none"} docId={docId} docName={doc?.filename} />
       </section>
     </main>
   );

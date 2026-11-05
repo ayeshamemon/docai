@@ -116,3 +116,104 @@ export async function getDetails(docId: string): Promise<DocumentDetails> {
 
 export const fileUrl = (docId: string) => `${API}/documents/${docId}/file`;
 export const pageImageUrl = (docId: string, page: number) => `${API}/documents/${docId}/pages/${page}`;
+
+// ---------- chat (Step 3.1 /chat, streamed as Server-Sent Events) ----------
+
+export type Mode = "rerank" | "hybrid" | "dense" | "bm25";
+
+export interface ChunkSource {
+  kind: "chunk";
+  doc_id: string;
+  chunk_id: string;
+  type: "text" | "table" | "figure";
+  heading: string;
+  pages: number[];
+  boxes: Box[];
+  text: string;
+  score: number;
+}
+
+export interface PageSource {
+  kind: "page";
+  doc_id: string;
+  page: number;
+  reason?: string;
+  score: number;
+}
+
+export type Source = ChunkSource | PageSource;
+
+export interface Timing {
+  retrieve_s: number;
+  first_token_s: number | null;
+  total_s: number;
+}
+
+export interface ChatRequest {
+  question: string;
+  doc_id: string;
+  mode?: Mode;
+  images?: number;
+}
+
+export interface ChatHandlers {
+  onSources: (s: Source[]) => void;
+  onToken: (text: string) => void;
+  onDone: (t: Timing) => void;
+  onError: (message: string) => void;
+}
+
+/**
+ * POST /chat and read the stream. (The browser's EventSource only supports GET,
+ * so we read the response body ourselves and split it into events.)
+ */
+export async function streamChat(req: ChatRequest, h: ChatHandlers, signal?: AbortSignal) {
+  let res: Response;
+  try {
+    res = await fetch(`${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+      signal,
+    });
+  } catch (e) {
+    if ((e as Error).name !== "AbortError") h.onError("Cannot reach the backend.");
+    return;
+  }
+  if (!res.ok || !res.body) {
+    const body = await res.json().catch(() => ({}));
+    h.onError(body.detail ?? `${res.status} ${res.statusText}`);
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // events are separated by a blank line
+      let sep;
+      while ((sep = buffer.indexOf("\n\n")) !== -1) {
+        const raw = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        let event = "message";
+        let data = "";
+        for (const line of raw.split("\n")) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:")) data += line.slice(5).trim();
+        }
+        if (!data) continue;
+        const payload = JSON.parse(data);
+        if (event === "sources") h.onSources(payload);
+        else if (event === "token") h.onToken(payload);
+        else if (event === "done") h.onDone(payload);
+        else if (event === "error") h.onError(payload);
+      }
+    }
+  } catch (e) {
+    if ((e as Error).name !== "AbortError") h.onError("The connection was interrupted.");
+  }
+}

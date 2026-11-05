@@ -1,0 +1,24 @@
+/* Styles for answers rendered from Markdown in the chat panel.
+   Tailwind resets headings and lists, so they need a little styling back. */
+
+.prose-chat > * + * { margin-top: 0.5rem; }
+.prose-chat h1, .prose-chat h2, .prose-chat h3, .prose-chat h4 {
+  font-weight: 600;
+  color: #171717;
+  margin-top: 0.9rem;
+}
+.prose-chat h1 { font-size: 1.05rem; }
+.prose-chat h2 { font-size: 1rem; }
+.prose-chat h3, .prose-chat h4 { font-size: 0.95rem; }
+.prose-chat ul { list-style: disc; padding-left: 1.25rem; }
+.prose-chat ol { list-style: decimal; padding-left: 1.25rem; }
+.prose-chat li + li { margin-top: 0.2rem; }
+.prose-chat strong { font-weight: 600; color: #171717; }
+.prose-chat code {
+  font-size: 0.85em;
+  background: #f5f5f5;
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+}
+.prose-chat hr { border-color: #e5e5e5; margin: 0.75rem 0; }
+.prose-chat p { line-height: 1.55; }
