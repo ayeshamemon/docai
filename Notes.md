@@ -299,6 +299,36 @@ After adding table row-splitting and sentence splitting (Apple 10-K):
 
 **Caveats:** questions written by one person (drafted from the PDFs); judged by keyword/page, not by the final answer; 55 questions is still small → answer-level evaluation in Step 4
 
+---
+
+## Step 3: Backend API + frontend
+
+**Backend (FastAPI, `backend/api/`)**
+- All models loaded once at startup (bge-small, BM25, bge-reranker-base, ColSmol, Gemini client) + one shared local-Qdrant connection with a lock
+- `POST /documents` (upload → background worker: parse → chunk → index → visual index, one PDF at a time; status in `status.json`; duplicates detected by file hash), `GET /documents`, `GET /documents/{id}`, `/status`, `/file`, `/pages/{n}`
+- `POST /chat` streams Server-Sent Events: `sources` (chunks with pages + bounding boxes, page images) → `token` … → `done` (timing)
+- Gemini: 30 s timeout per call, retry on 429/500/503/timeout, fallback model
+- Visual search is skipped for documents with no page images (~1–2 s saved)
+
+**Latency (one question, 10-K)**
+- 184.6 s with `gemini-3.8-flash` as main model (overloaded: repeated 503s and hanging calls) → **11.1 s** after switching main to `gemini-3.6-flash` (retrieval 4.7 s, first token at 11.0 s)
+- 11-page handwritten upload: ready in 63 s (parse 30 s, visual 33 s ≈ 3 s/page); 51-page handwritten upload: parse 131 s + ~3 s/page visual
+
+**Frontend (Next.js 16, `frontend/`)**
+- Documents column: drag-and-drop upload, live progress (polls status every 1.5 s)
+- PDF viewer (react-pdf / PDF.js): lazy page rendering (only pages near the view are drawn, max 40 kept), zoom, fallback to page images if the PDF file is missing
+- Chat: streamed answers (fetch + stream reader; EventSource only supports GET), Markdown, sources list, Stop, mode (rerank/hybrid) and images toggle
+- **Clickable citations:** `[p. 8]`, `[p. 3, 4]`, `[p. 3, p. 4]`, `[pp. 3-5]`, `[page 12]`, `[pages 3 and 5]`, `[p. 3; p. 9]` → one button per page; click → viewer scrolls to the page and highlights the source chunk's bounding boxes (PDF points scaled by rendered width / page width)
+
+**Frontend bugs found and fixed (good interview stories)**
+1. **Safari crash in PDF.js text layer:** PDF.js uses `for await (… of readableStream)`; Safari's ReadableStream is not async-iterable → polyfill + fallback that switches the text layer off if it still fails
+2. **Whole window scrolled instead of the viewer; reopened at "page 41":** a CSS grid row grows to fit its content, so the middle column became as tall as the whole PDF and Safari restored the old window scroll on reload → `grid-rows-[minmax(0,1fr)]` + `overflow-hidden`
+3. **Viewer jumped back to page 1 while scrolling:** logs showed the viewer unmounting/remounting in a loop. Newly visible pages suspended while PDF.js loaded them, and the nearest Suspense boundary was the `dynamic()` wrapper around the whole viewer → React hid the viewer (scroll lost) and re-ran its effects. Fix: a Suspense boundary per page + adding pages inside `startTransition`
+4. **Scroll jank:** state updated on every scroll event → now once per animation frame, only when the visible page set or current page changes; pages memoized
+5. **Citation formats:** Gemini writes citations in many shapes; the parser accepts all of the above and leaves non-citations (`[Table 2]`) alone
+
+**VLM limitation seen again:** chart peak values overestimated (Energy peak ~305 read as 330–350 on IMF Fig. 1.SF.1; earlier 187 read as 225–230). Series and timing were right.
+
 ## Where dense retrieval fails: test questions
 
 Run each question in every retrieval mode as it gets built, and fill in the result columns
@@ -344,6 +374,7 @@ Run each question in every retrieval mode as it gets built, and fill in the resu
 - ~~Merge tiny chunks (< ~30 words) into a neighbouring chunk~~ → done (rule 7)
 - ~~Attach a table's intro sentence to the table chunk~~ → done (rule 6)
 - ~~Long split-table headers repeated in every part~~ → fixed: Gazette p. 12 (a two-column name list) was parsed as one giant table whose "header row" was full of names; splitting it into 41 parts repeated that header in each, so "Menon" was in 44 of 138 chunks. Now captions/headers are repeated only if ≤ 40 words; otherwise first part only, later parts get "(table continued)".
+- Send page images only when likely needed (currently 3 images for every question on documents with visual pages, even when the text chunk already has the answer, e.g. "global growth in 2026" → "3.1 percent"). Candidate rules: question sounds visual (chart/figure/trend), all text hits weak (rerank < 0, as in T11), or high visual score. Test in the Step 4 answer evaluation (accuracy vs. cost/latency).
 - Keep only the best-scoring part of a split table in the final results (avoid one table filling several slots)
 - Drop text chunks whose body is only a number or year (e.g. "2025" between two tables)
 
