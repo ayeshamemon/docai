@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { Mode, Source, Timing, streamChat } from "@/lib/api";
+import { Box, Mode, Source, Timing, streamChat } from "@/lib/api";
 
 interface Message {
   role: "user" | "assistant";
@@ -15,12 +15,52 @@ interface Message {
   streaming?: boolean;
 }
 
+/** Called when a citation or a source is clicked: jump to `page` and highlight `boxes`. */
+export type CiteHandler = (page: number, boxes: Box[]) => void;
+
 interface Props {
   docId: string | null;
   docName?: string;
+  onCite?: CiteHandler;
 }
 
-export default function ChatPanel({ docId, docName }: Props) {
+// Citations Gemini writes in many shapes: [p. 8]  [p. 3, 4]  [p. 3, p. 4]  [pp. 3-5]
+// [p. 3–4, 9]  [page 12]  [pages 3 and 5]  [p. 3; p. 9]  →  one clickable chip per page.
+// Any bracket starting with p./pp./page is checked strictly, so "[Table 2]" or
+// "[p. 3 for details]" stay plain text.
+const CITATION = /\[\s*((?:pp?\.|pages?)\s*[^\]\n]{1,60})\]/gi;
+const VALID = /^(?:(?:pp?\.|pages?)?\s*\d+(?:\s*[–-]\s*\d+)?\s*(?:,|;|and|&)?\s*)+$/i;
+
+function citePages(list: string): number[] {
+  const pages: number[] = [];
+  const clean = list.replace(/pp?\.|pages?/gi, " ");
+  for (const part of clean.split(/,|;|\band\b|&/i)) {
+    const [a, b] = part.split(/[–-]/).map((x) => parseInt(x.trim(), 10));
+    if (Number.isNaN(a)) continue;
+    if (b && b >= a && b - a < 20) for (let p = a; p <= b; p++) pages.push(p);
+    else pages.push(a);
+  }
+  return [...new Set(pages)];
+}
+
+/** Turn citations into Markdown links (#cite-8) that the renderer shows as buttons. */
+function linkCitations(text: string): string {
+  return text.replace(CITATION, (whole: string, inner: string) => {
+    if (!VALID.test(inner.trim())) return whole;
+    const pages = citePages(inner);
+    return pages.length
+      ? pages.map((p) => `[p.\u00a0${p}](#cite-${p})`).join(" ")
+      : whole;
+  });
+}
+
+/** Boxes of this answer's source chunks that lie on `page`. */
+function boxesOnPage(sources: Source[] | undefined, page: number): Box[] {
+  return (sources ?? []).flatMap((s) =>
+    s.kind === "chunk" ? s.boxes.filter((b) => b.page === page) : []);
+}
+
+export default function ChatPanel({ docId, docName, onCite }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<Mode>("rerank");
@@ -118,7 +158,7 @@ export default function ChatPanel({ docId, docName }: Props) {
               {m.text}
             </div>
           ) : (
-            <AssistantMessage key={i} m={m} />
+            <AssistantMessage key={i} m={m} onCite={onCite} />
           ),
         )}
         <div ref={bottom} />
@@ -154,8 +194,9 @@ export default function ChatPanel({ docId, docName }: Props) {
   );
 }
 
-function AssistantMessage({ m }: { m: Message }) {
+function AssistantMessage({ m, onCite }: { m: Message; onCite?: CiteHandler }) {
   const [open, setOpen] = useState(false);
+  const cite = (page: number) => onCite?.(page, boxesOnPage(m.sources, page));
   const chunks = m.sources?.filter((s) => s.kind === "chunk") ?? [];
   const pages = m.sources?.filter((s) => s.kind === "page") ?? [];
 
@@ -163,7 +204,29 @@ function AssistantMessage({ m }: { m: Message }) {
     <div className="text-sm text-neutral-800">
       {m.text ? (
         <div className="prose-chat">
-          <ReactMarkdown>{m.text}</ReactMarkdown>
+          <ReactMarkdown
+            components={{
+              // citation links (#cite-N) become buttons that jump to the page
+              a: ({ href, children }) => {
+                const page = href?.startsWith("#cite-") ? parseInt(href.slice(6), 10) : NaN;
+                if (Number.isNaN(page)) {
+                  return <a href={href} target="_blank" rel="noreferrer" className="underline">{children}</a>;
+                }
+                return (
+                  <button
+                    type="button"
+                    onClick={() => cite(page)}
+                    title={`Show page ${page} in the document`}
+                    className="mx-0.5 inline-flex items-center rounded bg-amber-100 px-1 py-px align-baseline text-[11px] font-medium text-amber-800 hover:bg-amber-200"
+                  >
+                    {children}
+                  </button>
+                );
+              },
+            }}
+          >
+            {linkCitations(m.text)}
+          </ReactMarkdown>
         </div>
       ) : m.streaming && !m.error ? (
         <p className="animate-pulse text-neutral-400">
@@ -185,9 +248,14 @@ function AssistantMessage({ m }: { m: Message }) {
               {chunks.map((s) =>
                 s.kind === "chunk" && (
                   <li key={s.chunk_id}>
-                    <span className="font-medium text-neutral-700">
+                    <button
+                      type="button"
+                      onClick={() => onCite?.(s.pages[0], s.boxes)}
+                      title="Show this source in the document"
+                      className="font-medium text-neutral-700 underline-offset-2 hover:underline"
+                    >
                       p. {s.pages.join(", ")} · {s.type}
-                    </span>
+                    </button>
                     {s.heading && <span className="text-neutral-500"> — {s.heading}</span>}
                     <p className="line-clamp-2 text-neutral-500">{s.text.replace(s.heading, "").trim()}</p>
                   </li>
@@ -196,7 +264,10 @@ function AssistantMessage({ m }: { m: Message }) {
               {pages.map((s) =>
                 s.kind === "page" && (
                   <li key={`p${s.page}`} className="text-neutral-600">
-                    🖼 page image p. {s.page} {s.reason && `(${s.reason})`}
+                    <button type="button" onClick={() => onCite?.(s.page, [])}
+                      className="underline-offset-2 hover:underline">
+                      🖼 page image p. {s.page} {s.reason && `(${s.reason})`}
+                    </button>
                   </li>
                 ),
               )}
