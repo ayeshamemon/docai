@@ -86,3 +86,33 @@ export function stageProgress(st: Pick<Status, "stage" | "pages_done" | "pages_t
   }
   return base[st.stage] ?? 0;
 }
+
+// ---------- document details (Step 3.3) ----------
+
+export interface PageInfo {
+  page: number;
+  type: "digital" | "scanned" | "blank";
+  width: number;   // PDF points
+  height: number;  // PDF points
+}
+
+export interface DocumentDetails {
+  doc_id: string;
+  filename: string;
+  num_pages: number;
+  has_file: boolean;
+  pages: PageInfo[];
+}
+
+/** A region to highlight: page number + [left, top, right, bottom] in PDF points (top-left origin). */
+export interface Box {
+  page: number;
+  bbox: [number, number, number, number];
+}
+
+export async function getDetails(docId: string): Promise<DocumentDetails> {
+  return json(await fetch(`${API}/documents/${docId}`, { cache: "no-store" }));
+}
+
+export const fileUrl = (docId: string) => `${API}/documents/${docId}/file`;
+export const pageImageUrl = (docId: string, page: number) => `${API}/documents/${docId}/pages/${page}`;
