@@ -5,6 +5,9 @@ Endpoints
     GET  /documents                 list documents and their status
     POST /documents                 upload a PDF (returns at once; processed in the background)
     GET  /documents/{doc_id}/status queued → parsing → chunking → indexing → visual_indexing → ready
+    GET  /documents/{doc_id}        details: pages with width/height (PDF points, for highlights)
+    GET  /documents/{doc_id}/file   the PDF itself (for the viewer)
+    GET  /documents/{doc_id}/pages/{n}  one page image (PNG)
     POST /chat                      streamed answer (SSE): sources → tokens → done
 
 Loads every model ONCE at startup and keeps one shared Qdrant connection,
@@ -34,7 +37,9 @@ import tempfile
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse
+import re
+
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ingest.index import COLLECTION, doc_filter, get_client, get_dense, get_sparse
@@ -143,6 +148,63 @@ def upload_document(file: UploadFile = File(...)):
     dest = dest_dir / Path(file.filename).name
     shutil.move(str(tmp_path), dest)
     return worker.enqueue(doc_id, dest, Path(file.filename).name)
+
+
+DOC_ID = re.compile(r"^[0-9a-f]{16}$")          # our ids are 16 hex characters
+
+
+def doc_dir(doc_id: str) -> Path:
+    """Folder of a processed document; also blocks paths like '../../etc'."""
+    if not DOC_ID.match(doc_id) or not (PROCESSED / doc_id / "meta.json").exists():
+        raise HTTPException(404, f"unknown doc_id {doc_id}")
+    return PROCESSED / doc_id
+
+
+def find_pdf(doc_id: str) -> Path | None:
+    """Uploaded files live in data/uploads/<doc_id>/; CLI-processed ones usually in samples/."""
+    for f in (worker.UPLOADS / doc_id).glob("*.pdf"):
+        return f
+    meta = json.loads((PROCESSED / doc_id / "meta.json").read_text())
+    for folder in (Path("samples"), worker.UPLOADS):
+        f = folder / meta["filename"]
+        if f.exists():
+            return f
+    return None
+
+
+@app.get("/documents/{doc_id}")
+def document_details(doc_id: str):
+    meta = json.loads((doc_dir(doc_id) / "meta.json").read_text())
+    return {
+        "doc_id": doc_id,
+        "filename": meta["filename"],
+        "num_pages": meta["num_pages"],
+        "status": worker.get_status(doc_id) or {"stage": "ready"},
+        "has_file": find_pdf(doc_id) is not None,
+        # bboxes are in PDF points with the origin top-left; the viewer scales them
+        # by (rendered width / page width)
+        "pages": [{"page": p["page"], "type": p["type"],
+                   "width": p["width"], "height": p["height"]} for p in meta["pages"]],
+    }
+
+
+@app.get("/documents/{doc_id}/file")
+def document_file(doc_id: str):
+    doc_dir(doc_id)
+    f = find_pdf(doc_id)
+    if not f:
+        raise HTTPException(404, "original PDF not found (it was processed from another folder)")
+    # inline = the browser shows it instead of downloading it
+    return FileResponse(f, media_type="application/pdf", filename=f.name,
+                        content_disposition_type="inline")
+
+
+@app.get("/documents/{doc_id}/pages/{page}")
+def page_image(doc_id: str, page: int):
+    f = doc_dir(doc_id) / "pages" / f"page_{page}.png"
+    if not f.exists():
+        raise HTTPException(404, f"page {page} not found")
+    return FileResponse(f, media_type="image/png")
 
 
 @app.get("/documents/{doc_id}/status")
