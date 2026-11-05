@@ -39,8 +39,8 @@ const GAP = 16;          // px between pages
 const OVERSCAN = 1500;   // px above/below the viewport where pages get drawn
 const MAX_RENDERED = 40; // drawn pages kept in memory; farther ones are released
 const NO_BOXES: Box[] = [];
-const LOADING = <p className="p-6 text-sm text-neutral-400">Loading PDF…</p>;
-const PAGE_PLACEHOLDER = <div className="h-full w-full animate-pulse bg-neutral-100" />;
+const LOADING = <p className="p-6 text-sm text-ink-faint">Opening the PDF…</p>;
+const PAGE_PLACEHOLDER = <div className="h-full w-full bg-white" />;
 
 interface Props {
   docId: string;
@@ -172,6 +172,7 @@ export default function PdfViewer({ docId, pages, hasFile, goTo, highlights = NO
           useImages={useImages}
           textLayer={textLayer}
           boxes={boxesByPage.get(l.page) ?? NO_BOXES}
+          flash={boxesByPage.has(l.page) ? goTo?.nonce ?? 0 : 0}
           onTextError={onTextError}
         />
       ))}
@@ -181,22 +182,22 @@ export default function PdfViewer({ docId, pages, hasFile, goTo, highlights = NO
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* toolbar */}
-      <div className="flex items-center justify-between gap-2 border-b border-neutral-200 bg-white px-3 py-1.5 text-sm">
+      <div className="flex items-center justify-between gap-2 border-b border-rule bg-paper px-3 py-1.5 text-sm">
         <div className="flex items-center gap-1">
           <ToolButton label="Previous page" onClick={() => scrollToPage(Math.max(1, currentPage - 1))}>‹</ToolButton>
-          <span className="w-20 text-center tabular-nums text-neutral-600">
+          <span className="w-20 text-center tabular-nums text-ink-soft">
             {currentPage} / {pages.length}
           </span>
           <ToolButton label="Next page" onClick={() => scrollToPage(Math.min(pages.length, currentPage + 1))}>›</ToolButton>
         </div>
         <div className="flex items-center gap-1">
           {useImages && (
-            <span className="mr-2 text-xs text-neutral-400" title="Original PDF not found; showing page images">
-              page images
+            <span className="mr-2 text-xs text-ink-faint" title="The original PDF was not found, so the saved page images are shown">
+              Showing page images
             </span>
           )}
           <ToolButton label="Zoom out" onClick={() => setZoom((z) => Math.max(0.5, +(z - 0.15).toFixed(2)))}>−</ToolButton>
-          <span className="w-12 text-center tabular-nums text-neutral-600">{Math.round(zoom * 100)}%</span>
+          <span className="w-12 text-center tabular-nums text-ink-soft">{Math.round(zoom * 100)}%</span>
           <ToolButton label="Zoom in" onClick={() => setZoom((z) => Math.min(2.5, +(z + 0.15).toFixed(2)))}>+</ToolButton>
           <ToolButton label="Fit width" onClick={() => setZoom(1)}>Fit</ToolButton>
         </div>
@@ -206,7 +207,7 @@ export default function PdfViewer({ docId, pages, hasFile, goTo, highlights = NO
       <div
         ref={scroller}
         onScroll={onScroll}
-        className="min-h-0 flex-1 overflow-auto overscroll-contain bg-neutral-100"
+        className="min-h-0 flex-1 overflow-auto overscroll-contain bg-desk"
       >
         {useImages ? (
           pagesView
@@ -228,14 +229,14 @@ export default function PdfViewer({ docId, pages, hasFile, goTo, highlights = NO
 // inside it when `show` is true, and the highlight boxes on top.
 // memo → re-renders only when its own props change, not on every scroll.
 const PageSlot = memo(function PageSlot({
-  docId, slot, width, show, useImages, textLayer, boxes, onTextError,
+  docId, slot, width, show, useImages, textLayer, boxes, flash, onTextError,
 }: {
   docId: string; slot: Slot; width: number; show: boolean; useImages: boolean;
-  textLayer: boolean; boxes: Box[]; onTextError: () => void;
+  textLayer: boolean; boxes: Box[]; flash: number; onTextError: () => void;
 }) {
   return (
     <div
-      className="absolute left-0 overflow-hidden bg-white shadow-md"
+      className="pdf-page absolute left-0 overflow-hidden"
       style={{ top: slot.top, width, height: slot.height }}
     >
       {show && (
@@ -263,8 +264,8 @@ const PageSlot = memo(function PageSlot({
         const [x0, y0, x1, y1] = h.bbox;
         return (
           <div
-            key={i}
-            className="pointer-events-none absolute rounded-sm bg-yellow-300/35 ring-2 ring-yellow-400/80"
+            key={`${flash}-${i}`}
+            className="marker-box pointer-events-none absolute"
             style={{
               left: x0 * slot.scale - 2,
               top: y0 * slot.scale - 2,
@@ -275,7 +276,7 @@ const PageSlot = memo(function PageSlot({
         );
       })}
 
-      <span className="pointer-events-none absolute bottom-1 right-2 rounded bg-white/80 px-1 text-[10px] text-neutral-400">
+      <span className="pointer-events-none absolute bottom-1 right-2 rounded bg-white/80 px-1 text-[10px] text-[#8794a3]">
         {slot.page}
       </span>
     </div>
@@ -289,7 +290,7 @@ function ToolButton({ label, onClick, children }: { label: string; onClick: () =
       title={label}
       aria-label={label}
       onClick={onClick}
-      className="min-w-7 rounded px-2 py-0.5 text-neutral-700 hover:bg-neutral-100 active:bg-neutral-200"
+      className="min-w-7 rounded px-2 py-0.5 text-ink-soft hover:bg-desk hover:text-ink active:bg-rule"
     >
       {children}
     </button>

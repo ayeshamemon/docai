@@ -1,19 +1,18 @@
 "use client";
 
-// Main screen: documents | PDF viewer | chat.
+// Workspace (/app): documents | PDF viewer | chat.
 // 3.4a documents ✓ · 3.4b viewer ✓ · 3.4c chat ✓ · 3.4d clickable citations ✓
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useState } from "react";
 import ChatPanel from "@/components/ChatPanel";
 import DocumentSidebar from "@/components/DocumentSidebar";
-import "./chat.css";
 import { Box, DocumentDetails, DocumentSummary, getDetails } from "@/lib/api";
 
 // PDF.js only runs in the browser, so the viewer is loaded on the client only.
 const PdfViewer = dynamic(() => import("@/components/PdfViewer"), {
   ssr: false,
-  loading: () => <p className="p-6 text-sm text-neutral-400">Loading viewer…</p>,
+  loading: () => <p className="p-6 text-sm text-ink-faint">Opening the viewer…</p>,
 });
 
 export default function Home() {
@@ -50,16 +49,26 @@ export default function Home() {
   return (
     // grid-rows-[minmax(0,1fr)] + overflow-hidden: the row is exactly the screen height, so only the
     // viewer scrolls (without it the row grew to the full PDF height and the whole window scrolled)
-    <main className="grid h-screen grid-cols-[260px_1fr_400px] grid-rows-[minmax(0,1fr)] overflow-hidden bg-white text-neutral-900">
+    <main className="grid h-screen grid-cols-[264px_1fr_420px] grid-rows-[minmax(0,1fr)] overflow-hidden bg-paper text-ink">
       <DocumentSidebar selectedId={docId} onSelect={setDoc} />
 
-      <section className="min-h-0 min-w-0 border-r border-neutral-200 bg-neutral-100">
+      <section className="min-h-0 min-w-0 border-r border-rule bg-desk">
         {!doc && (
-          <div className="flex h-full items-center justify-center text-sm text-neutral-400">
-            Select or upload a document
+          <div className="flex h-full items-center justify-center p-10">
+            <div className="max-w-sm">
+              <p className="text-2xl font-semibold leading-snug tracking-tight text-ink">
+                Ask a PDF anything.
+                <br />
+                See the exact passage behind every answer.
+              </p>
+              <p className="mt-4 text-sm leading-relaxed text-ink-soft">
+                Reports, papers, scans and handwritten notes all work. Tables and charts are
+                read too. Add a PDF on the left, or open one from your library.
+              </p>
+            </div>
           </div>
         )}
-        {doc && error && <p className="p-6 text-sm text-red-600">{error}</p>}
+        {doc && error && <p className="m-6 rounded bg-danger-bg px-3 py-2 text-sm text-danger-text">Could not open this document: {error}</p>}
         {doc && details && (
           <PdfViewer
             key={details.doc_id}

@@ -60,6 +60,12 @@ function boxesOnPage(sources: Source[] | undefined, page: number): Box[] {
     s.kind === "chunk" ? s.boxes.filter((b) => b.page === page) : []);
 }
 
+const EXAMPLES = [
+  "Summarize this document in five points",
+  "What are the most important numbers?",
+  "What do the charts or tables show?",
+];
+
 export default function ChatPanel({ docId, docName, onCite }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -115,8 +121,8 @@ export default function ChatPanel({ docId, docName, onCite }: Props) {
 
   if (!docId) {
     return (
-      <div className="flex h-full items-center justify-center p-6 text-center text-sm text-neutral-400">
-        Open a document to ask questions about it
+      <div className="flex h-full items-center justify-center p-8 text-center text-sm text-ink-faint">
+        Open a document from your library to ask questions about it.
       </div>
     );
   }
@@ -124,37 +130,52 @@ export default function ChatPanel({ docId, docName, onCite }: Props) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* header with settings */}
-      <div className="flex items-center justify-between gap-2 border-b border-neutral-200 px-3 py-1.5 text-sm">
-        <span className="truncate font-medium text-neutral-700" title={docName}>
-          {docName ?? "Chat"}
+      <div className="flex items-center justify-between gap-2 border-b border-rule px-4 py-1.5 text-sm">
+        <span className="truncate font-medium text-ink" title={docName}>
+          {docName ? docName.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ") : "Chat"}
         </span>
-        <div className="flex shrink-0 items-center gap-2 text-xs text-neutral-600">
+        <div className="flex shrink-0 items-center gap-3 text-xs text-ink-soft">
           <select
             value={mode}
             onChange={(e) => setMode(e.target.value as Mode)}
-            className="rounded border border-neutral-200 bg-white px-1 py-0.5"
+            className="rounded border border-rule bg-paper px-1 py-0.5 text-ink"
             title="Retrieval mode"
           >
             <option value="rerank">Rerank</option>
             <option value="hybrid">Hybrid</option>
           </select>
           <label className="flex items-center gap-1" title="Also send page images (charts, scans) to Gemini">
-            <input type="checkbox" checked={images} onChange={(e) => setImages(e.target.checked)} />
-            Images
+            <input type="checkbox" checked={images} onChange={(e) => setImages(e.target.checked)} className="accent-blueprint" />
+            Read page images
           </label>
         </div>
       </div>
 
       {/* messages */}
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 py-4">
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-4 py-5">
         {messages.length === 0 && (
-          <p className="mt-8 text-center text-sm text-neutral-400">
-            Ask anything about this document.
-          </p>
+          <div className="mt-6">
+            <p className="text-sm text-ink-soft">
+              Ask anything about this document. Answers cite their pages, and clicking a
+              citation shows the exact passage.
+            </p>
+            <div className="mt-4 flex flex-col items-start gap-2">
+              {EXAMPLES.map((q) => (
+                <button
+                  key={q}
+                  type="button"
+                  onClick={() => setInput(q)}
+                  className="rounded-md border border-rule px-3 py-1.5 text-left text-sm text-ink hover:border-ink-faint hover:bg-desk/50"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          </div>
         )}
         {messages.map((m, i) =>
           m.role === "user" ? (
-            <div key={i} className="ml-8 rounded-lg bg-neutral-900 px-3 py-2 text-sm text-white">
+            <div key={i} className="ml-10 rounded-lg bg-ink px-3 py-2 text-sm leading-relaxed text-paper">
               {m.text}
             </div>
           ) : (
@@ -165,7 +186,7 @@ export default function ChatPanel({ docId, docName, onCite }: Props) {
       </div>
 
       {/* input */}
-      <div className="border-t border-neutral-200 p-2">
+      <div className="border-t border-rule p-3">
         <div className="flex items-end gap-2">
           <textarea
             value={input}
@@ -174,18 +195,18 @@ export default function ChatPanel({ docId, docName, onCite }: Props) {
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
             }}
             rows={2}
-            placeholder="Ask a question…  (Enter to send, Shift+Enter for a new line)"
-            className="min-h-0 flex-1 resize-none rounded-md border border-neutral-200 px-2 py-1.5 text-sm outline-none focus:border-neutral-400"
+            placeholder="Ask a question about this document"
+            className="min-h-0 flex-1 resize-none rounded-md border border-rule px-2.5 py-2 text-sm text-ink outline-none placeholder:text-ink-faint focus:border-blueprint"
           />
           {busy ? (
             <button type="button" onClick={stop}
-              className="rounded-md bg-neutral-200 px-3 py-2 text-sm text-neutral-800 hover:bg-neutral-300">
+              className="rounded-md border border-rule px-3 py-2 text-sm text-ink hover:bg-desk">
               Stop
             </button>
           ) : (
             <button type="button" onClick={send} disabled={!input.trim()}
-              className="rounded-md bg-neutral-900 px-3 py-2 text-sm text-white hover:bg-neutral-700 disabled:opacity-40">
-              Send
+              className="rounded-md bg-blueprint px-3 py-2 text-sm font-medium text-paper hover:bg-blueprint/90 disabled:opacity-40">
+              Ask
             </button>
           )}
         </div>
@@ -201,7 +222,7 @@ function AssistantMessage({ m, onCite }: { m: Message; onCite?: CiteHandler }) {
   const pages = m.sources?.filter((s) => s.kind === "page") ?? [];
 
   return (
-    <div className="text-sm text-neutral-800">
+    <div className="text-sm text-ink">
       {m.text ? (
         <div className="prose-chat">
           <ReactMarkdown
@@ -217,7 +238,7 @@ function AssistantMessage({ m, onCite }: { m: Message; onCite?: CiteHandler }) {
                     type="button"
                     onClick={() => cite(page)}
                     title={`Show page ${page} in the document`}
-                    className="mx-0.5 inline-flex items-center rounded bg-amber-100 px-1 py-px align-baseline text-[11px] font-medium text-amber-800 hover:bg-amber-200"
+                    className="cite"
                   >
                     {children}
                   </button>
@@ -229,7 +250,7 @@ function AssistantMessage({ m, onCite }: { m: Message; onCite?: CiteHandler }) {
           </ReactMarkdown>
         </div>
       ) : m.streaming && !m.error ? (
-        <p className="animate-pulse text-neutral-400">
+        <p className="animate-pulse text-ink-faint">
           {m.sources ? "Writing the answer…" : "Searching the document…"}
         </p>
       ) : null}
@@ -237,14 +258,14 @@ function AssistantMessage({ m, onCite }: { m: Message; onCite?: CiteHandler }) {
       {m.error && <p className="mt-1 rounded bg-red-50 px-2 py-1 text-xs text-red-700">{m.error}</p>}
 
       {(chunks.length > 0 || pages.length > 0) && (
-        <div className="mt-2 text-xs text-neutral-500">
-          <button type="button" onClick={() => setOpen((o) => !o)} className="hover:text-neutral-800">
+        <div className="mt-3 text-xs text-ink-faint">
+          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="hover:text-ink">
             {open ? "▾" : "▸"} {chunks.length} sources
-            {pages.length > 0 && ` · ${pages.length} page images`}
-            {m.timing && ` · ${m.timing.total_s}s`}
+            {pages.length > 0 && `, ${pages.length} page images`}
+            {m.timing && ` (${m.timing.total_s} s)`}
           </button>
           {open && (
-            <ul className="mt-1 space-y-1.5 border-l-2 border-neutral-200 pl-2">
+            <ul className="mt-2 space-y-2 border-l-2 border-marker pl-3">
               {chunks.map((s) =>
                 s.kind === "chunk" && (
                   <li key={s.chunk_id}>
@@ -252,21 +273,21 @@ function AssistantMessage({ m, onCite }: { m: Message; onCite?: CiteHandler }) {
                       type="button"
                       onClick={() => onCite?.(s.pages[0], s.boxes)}
                       title="Show this source in the document"
-                      className="font-medium text-neutral-700 underline-offset-2 hover:underline"
+                      className="font-medium text-ink underline-offset-2 hover:underline"
                     >
-                      p. {s.pages.join(", ")} · {s.type}
+                      Page {s.pages.join(", ")}{s.type === "table" ? ", table" : ""}
                     </button>
-                    {s.heading && <span className="text-neutral-500"> — {s.heading}</span>}
-                    <p className="line-clamp-2 text-neutral-500">{s.text.replace(s.heading, "").trim()}</p>
+                    {s.heading && <span className="text-ink-soft">: {s.heading}</span>}
+                    <p className="line-clamp-2 text-ink-faint">{s.text.replace(s.heading, "").trim()}</p>
                   </li>
                 ),
               )}
               {pages.map((s) =>
                 s.kind === "page" && (
-                  <li key={`p${s.page}`} className="text-neutral-600">
+                  <li key={`p${s.page}`} className="text-ink-soft">
                     <button type="button" onClick={() => onCite?.(s.page, [])}
                       className="underline-offset-2 hover:underline">
-                      🖼 page image p. {s.page} {s.reason && `(${s.reason})`}
+                      Page {s.page} image{s.reason === "scanned" ? " (scan)" : s.reason === "figure" ? " (figure)" : ""}
                     </button>
                   </li>
                 ),
