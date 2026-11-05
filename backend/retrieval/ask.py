@@ -23,6 +23,8 @@ import argparse
 import os
 import time
 
+import httpx
+
 from dotenv import load_dotenv
 from google import genai
 from google.genai import errors, types
@@ -33,6 +35,7 @@ load_dotenv()
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "")   # optional, used if MODEL stays busy
 MAX_RETRIES = 3
+GEMINI_TIMEOUT_S = int(os.environ.get("GEMINI_TIMEOUT_S", "30"))   # per Gemini call
 TOP_K = 5
 DEFAULT_IMAGES = 3   # max page images per answer (cost/latency cap)
 TEXT_PAGE_MIN_SCORE = 0.0   # rerank score a text hit needs before its page images are used
@@ -45,7 +48,8 @@ def get_llm() -> genai.Client:
     If it is created inside a function, Python closes it before streaming finishes."""
     global _llm
     if _llm is None:
-        _llm = genai.Client()
+        # timeout (milliseconds): a hanging call fails and gets retried instead of waiting minutes
+        _llm = genai.Client(http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_S * 1000))
     return _llm
 
 SYSTEM_PROMPT = """You answer questions about PDF documents using ONLY the sources given.
@@ -80,14 +84,17 @@ def build_contents(question: str, hits: list[dict], pages: list[dict]) -> list:
     return contents
 
 
-def pick_pages(question: str, hits: list[dict], doc_id: str | None, n: int) -> list[dict]:
-    """Up to n page images: top visual hit, then pages of the top text chunks, then more visual."""
+def pick_pages(question: str, hits: list[dict], doc_id: str | None, n: int,
+               client=None) -> list[dict]:
+    """Up to n page images: top visual hit, then pages of the top text chunks, then more visual.
+    Pass `client` to reuse an open Qdrant connection (the API server does)."""
     if n <= 0:
         return []
     from ingest.index import get_client
     from ingest.visual_index import PAGE_COLLECTION, get_page_client, page_point_id
 
-    client = get_page_client(get_client())
+    own = client is None
+    client = get_page_client(client or get_client())
     chosen, seen = [], set()
 
     def add(p):
@@ -109,14 +116,22 @@ def pick_pages(question: str, hits: list[dict], doc_id: str | None, n: int) -> l
                      "pages": [pg], "heading": "page image (from text hit)"})
     for v in visual[1:]:                                          # 3. fill up with visual
         add(v)
-    client.close()
+    if own:
+        client.close()
     return chosen
 
 
+def retrieve(question: str, doc_id: str | None = None, k: int = TOP_K,
+             mode: str = "rerank", images: int = DEFAULT_IMAGES, client=None):
+    """Step 1 only: text chunks + page images (no LLM). Used by answer() and by the API."""
+    hits = search(question, client, k=k, doc_id=doc_id, mode=mode)       # 1a. text chunks
+    pages = pick_pages(question, hits, doc_id, images, client)           # 1b. page images
+    return hits, pages
+
+
 def answer(question: str, doc_id: str | None = None, k: int = TOP_K,
-           mode: str = "rerank", images: int = DEFAULT_IMAGES):
-    hits = search(question, k=k, doc_id=doc_id, mode=mode)            # 1a. text chunks
-    pages = pick_pages(question, hits, doc_id, images)                # 1b. page images
+           mode: str = "rerank", images: int = DEFAULT_IMAGES, client=None):
+    hits, pages = retrieve(question, doc_id, k, mode, images, client)  # 1. retrieve
 
     contents = build_contents(question, hits, pages)                   # 2. build prompt
     return hits + pages, generate(contents)                            # 3. generate (streaming)
@@ -143,13 +158,15 @@ def generate(contents):
                     started = True
                     yield part.text or ""
                 return                                    # success
-            except (errors.ServerError, errors.ClientError) as e:
-                busy = getattr(e, "code", None) in (429, 500, 503)
+            except (errors.ServerError, errors.ClientError, httpx.TimeoutException) as e:
+                code = "timeout" if isinstance(e, httpx.TimeoutException) else getattr(e, "code", None)
+                busy = code in (429, 500, 503, "timeout")
                 if started or not busy:                   # mid-answer failure or real error: stop
                     raise                                 # real error (bad key, bad model): stop
                 last_error = e
                 wait = 2 ** attempt * 2                   # 2s, 4s, 8s
-                print(f"\n[{model} busy ({e.code}), retrying in {wait}s...]", flush=True)
+                t = time.strftime("%H:%M:%S")
+                print(f"\n[{t}] [{model} busy ({code}), retrying in {wait}s...]", flush=True)
                 time.sleep(wait)
         if FALLBACK_MODEL and model != FALLBACK_MODEL:
             print(f"\n[switching to fallback model {FALLBACK_MODEL}]", flush=True)
