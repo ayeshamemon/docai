@@ -5,6 +5,7 @@ Step 2.4 — Retrieval modes.
   bm25   : exact words only                                 ← for diagnosis
   hybrid : dense + bm25, merged with RRF (rank fusion)
   rerank : hybrid top 20 → cross-encoder re-reads each (question, chunk) → top k
+  visual : ColQwen2.5 searches PAGE IMAGES (charts, scans)   ← Step 2.5
 
 Usage (run from backend/):
     python -m retrieval.search "391,035" --doc f9a3e5b32cb7cbf2 --mode hybrid
@@ -12,6 +13,8 @@ Usage (run from backend/):
 
 Test mode: where does the answer chunk rank in EVERY mode?
     python -m retrieval.search "391,035" --doc f9a3e5b32cb7cbf2 --find 391,035
+    python -m retrieval.search "Which commodity peaks highest?" --doc 56935fc42267b24a --page 9
+  (--page = rank of the answer PAGE; works for text modes and the visual mode)
 """
 
 import argparse
@@ -23,7 +26,8 @@ from ingest.index import COLLECTION, doc_filter, get_client, get_dense, get_spar
 
 RERANK_MODEL = "BAAI/bge-reranker-base"
 CANDIDATES = 20          # how many chunks each first-stage search hands on
-MODES = ["dense", "bm25", "hybrid", "rerank"]
+TEXT_MODES = ["dense", "bm25", "hybrid", "rerank"]
+MODES = TEXT_MODES + ["visual"]
 
 _reranker = None
 
@@ -90,12 +94,22 @@ def search_rerank(query, client, k, doc_id=None):
     return sorted(candidates, key=lambda c: c["score"], reverse=True)[:k]
 
 
+def search_visual(query, client, k, doc_id=None):
+    """ColPali-style: each question token finds its best patch on each page (MaxSim)."""
+    from ingest.visual_index import PAGE_COLLECTION, embed_query, get_page_client
+    get_page_client(client)                                # make sure the collection exists
+    pts = client.query_points(PAGE_COLLECTION, query=embed_query(query), using="colpali",
+                              limit=k, query_filter=doc_filter(doc_id) if doc_id else None).points
+    return [{"score": round(p.score, 3), "type": "page", "text": "", "pages": [p.payload["page"]],
+             "heading": f"page image ({p.payload['reason']})", **p.payload} for p in pts]
+
+
 SEARCHERS = {"dense": search_dense, "bm25": search_bm25,
-             "hybrid": search_hybrid, "rerank": search_rerank}
+             "hybrid": search_hybrid, "rerank": search_rerank, "visual": search_visual}
 
 
 def search(query: str, client: QdrantClient | None = None, k: int = 5,
-           doc_id: str | None = None, mode: str = "hybrid") -> list[dict]:
+           doc_id: str | None = None, mode: str = "rerank") -> list[dict]:
     own = client is None
     client = client or get_client()
     try:
@@ -107,35 +121,45 @@ def search(query: str, client: QdrantClient | None = None, k: int = 5,
 
 # ---------- command line ----------
 
-def find_rank(hits, keyword):
-    kw = keyword.lower()
-    return next((i for i, h in enumerate(hits, 1) if kw in h["text"].lower()), None)
+def find_rank(hits, keyword=None, page=None):
+    """Rank of the first hit that contains the keyword, or that is on the given page."""
+    for i, h in enumerate(hits, 1):
+        if page is not None and page in h["pages"]:
+            return i
+        if keyword and keyword.lower() in h["text"].lower():
+            return i
+    return None
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("query")
     ap.add_argument("--doc", default=None)
-    ap.add_argument("--mode", choices=MODES, default="hybrid")
+    ap.add_argument("--mode", choices=MODES, default="rerank")
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--find", default=None,
-                    help="keyword from the correct answer: prints its rank in every mode")
+                    help="keyword from the correct answer: prints its rank in every text mode")
+    ap.add_argument("--page", type=int, default=None,
+                    help="page of the correct answer: prints its rank in every mode, incl. visual")
     args = ap.parse_args()
 
     client = get_client()
-    if args.find:
-        print(f'\nQ: {args.query}\nanswer keyword: "{args.find}"\n')
-        for mode in MODES:
+    if args.find or args.page:
+        target = f'page {args.page}' if args.page else f'keyword "{args.find}"'
+        print(f'\nQ: {args.query}\nanswer: {target}\n')
+        # visual can only be judged by page (page images have no text)
+        modes = MODES if args.page else TEXT_MODES
+        for mode in modes:
             # reranker only re-orders the hybrid top 20, so its depth is 20
             depth = CANDIDATES if mode == "rerank" else 30
             hits = SEARCHERS[mode](args.query, client, depth, args.doc)
-            r = find_rank(hits, args.find)
+            r = find_rank(hits, args.find, args.page)
             mark = "✅" if r and r <= args.k else "❌"
             where = f"rank {r}" if r else f"not in top {depth}"
             print(f"  {mode:<7} {mark}  {where}")
     else:
         for i, h in enumerate(SEARCHERS[args.mode](args.query, client, args.k, args.doc), 1):
-            preview = h["text"].replace("\n", " ")[:160]
+            preview = (h["text"] or h.get("image", "")).replace("\n", " ")[:160]
             print(f"\n#{i}  score {h['score']}  {h['type']}  doc {h['doc_id']}  pages {h['pages']}")
             print(f"    {preview}")
     client.close()

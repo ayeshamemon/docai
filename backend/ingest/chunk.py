@@ -9,6 +9,7 @@ Rule-based, structure-aware chunking (no model). Rules:
   2. Each chunk gets its heading on top
   3. Paragraphs are joined whole, up to 300 words (MAX_WORDS, heading included)
   4. Tables are their own chunk; big ones are split by rows with the header repeated
+     (caption/header repeated only if short, <= 40 words; otherwise first part only)
   5. Figures with captions are their own chunk (figures without captions are skipped)
   6. The table intro sentence ("The following table shows...") is attached to its table
   7. Tiny text chunks under 30 words (MIN_WORDS) are merged into a neighbour
@@ -31,6 +32,7 @@ EMBED_TOKEN_LIMIT = 512  # bge-small reads at most 512 tokens, the rest is cut o
 TOKENS_PER_WORD = 1.33   # rough estimate for English text
 HEADING_LABELS = {"section_header", "title"}
 MIN_WORDS = 30           # text chunks smaller than this get merged into a neighbour
+MAX_REPEAT_WORDS = 40    # split tables repeat caption/header only if they are this short
 INTRO_MAX_WORDS = 60     # a table intro sentence is short
 INTRO_PATTERN = re.compile(r"(following table|table below|tables below|as follows|summar(y|izes))",
                            re.IGNORECASE)
@@ -43,8 +45,11 @@ def words(text: str) -> int:
 def split_table(md: str, budget: int) -> list[str]:
     """
     Split a big Markdown table into smaller tables by rows.
-    Every part repeats the caption and the header row, so each part
-    still knows what its columns mean (e.g. which column is 2026).
+    Parts repeat the caption and the header row so each part still knows what
+    its columns mean (e.g. which column is 2026), but ONLY if they are short.
+    A long caption or "header" (e.g. a scanned name list read as one table, where
+    the header row is full of names) appears in the first part only; repeating it
+    would create dozens of near-identical chunks.
     """
     lines = md.split("\n")
     table_idx = [i for i, l in enumerate(lines) if l.lstrip().startswith("|")]
@@ -55,9 +60,15 @@ def split_table(md: str, budget: int) -> list[str]:
     header = lines[first:first + 2]              # header row + |---| line
     rows = [lines[i] for i in table_idx[2:]]
 
-    fixed = words(caption) + words("\n".join(header))
+    # what later parts repeat: only short captions / headers
+    rep_caption = caption if words(caption) <= MAX_REPEAT_WORDS else ""
+    rep_header = header if words(header[0]) <= MAX_REPEAT_WORDS else []
+    first_fixed = words(caption) + words("\n".join(header))
+    later_fixed = words(rep_caption) + words("\n".join(rep_header)) + 2
+
     parts, current = [], []
     for row in rows:
+        fixed = first_fixed if not parts else later_fixed
         if current and fixed + words("\n".join(current + [row])) > budget:
             parts.append(current)
             current = []
@@ -65,8 +76,16 @@ def split_table(md: str, budget: int) -> list[str]:
     if current:
         parts.append(current)
 
-    prefix = (caption + "\n\n") if caption else ""
-    return [prefix + "\n".join(header + p) for p in parts]
+    out = []
+    for i, p in enumerate(parts):
+        if i == 0:
+            cap, head = caption, header
+        else:
+            cap, head = rep_caption, rep_header
+            if not cap or not head:                # something was left out: say so
+                cap = (cap + "\n\n" if cap else "") + "(table continued)"
+        out.append(((cap + "\n\n") if cap else "") + "\n".join(head + p))
+    return out
 
 
 def split_paragraph(text: str, budget: int) -> list[str]:

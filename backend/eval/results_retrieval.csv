@@ -1,0 +1,56 @@
+id,category,question,dense,bm25,hybrid,rerank,visual
+T1,formula-table,What is the complexity of self-attention?,15,1,3,4,
+T2,synonym,How many employees does Apple have?,1,6,1,1,
+T3,exact-term,What does Note 2 say about how revenue is recognized?,1,1,1,1,
+T4,exact-term,What are the risk factors in Item 1A?,1,1,1,1,
+T5,number,What BLEU score did the big Transformer get on English-German?,1,1,1,1,
+T6,number,"Which year had total net sales of 391,035?",1,1,1,1,
+T6b,number,"391,035",3,1,2,1,
+T7,table,What were Services net sales in 2025?,2,6,2,2,
+T8,chart,Which commodity price index peaks highest and when?,17,2,5,1,6
+T9,chart,Which country group had a negative structural primary balance change in 2025?,4,1,1,1,1
+T10,scan-faded,Who was appointed to the Indian Administrative Service?,21,1,2,4,1
+T11,scan-faded,Who was granted earned leave for 17 days?,1,8,1,6,2
+T12,scan-clean,What does the EPA ask states to post on their websites?,1,1,1,2,1
+T13,table,What were Apple's total net sales in 2026?,2,2,4,1,
+Q01,table,What were iPhone net sales in 2026?,3,6,4,1,
+Q02,table,What were Mac net sales in 2025?,2,5,3,2,
+Q03,table,How much did Apple make in Greater China in 2026?,10,6,7,3,
+Q04,number,What was Apple's effective tax rate in 2026?,1,2,1,2,
+Q05,number,How many shareholders of record did Apple have?,3,4,3,1,
+Q06,synonym,How many people work at Apple?,1,1,1,1,
+Q07,synonym,"Who audits Apple's financial statements, and since when?",1,18,3,2,
+Q08,exact-term,What is AppleCare?,1,1,1,1,
+Q09,prose,Why was Apple's effective tax rate higher in 2026 than in 2025?,4,1,1,1,
+Q10,prose,Why did Greater China net sales increase in 2026?,1,1,1,1,
+Q11,number,What BLEU score did the Transformer get on English-French?,3,3,3,1,
+Q12,exact-term,How many attention heads does the Transformer use?,8,10,10,10,
+Q13,exact-term,What value of warmup_steps was used?,1,1,1,1,
+Q14,synonym,What hardware were the models trained on?,1,1,1,1,
+Q15,synonym,How long did it take to train the big model?,1,1,1,1,
+Q16,prose,What regularization was applied with value 0.1 to the labels?,1,1,1,1,
+Q17,number,What is the size of the shared BPE vocabulary for English-German?,1,2,1,1,
+Q18,number,How many parameters does BERT-base have?,1,2,1,1,
+Q19,synonym,How much text was BERT pre-trained on?,2,2,1,2,
+Q20,exact-term,What fraction of tokens does BERT mask during pre-training?,3,2,3,1,
+Q21,number,What GLUE score did BERT-large obtain?,1,1,1,1,
+Q22,synonym,How long did pre-training take and on what hardware?,3,0,8,1,
+Q23,number,What is global growth projected to be in 2026?,1,2,1,1,
+Q24,number,What is the average petroleum spot price projected for 2026?,7,1,2,1,
+Q25,prose,How fast did China's economy grow in the second quarter?,1,1,1,1,
+Q26,chart,Which economy had the largest upward revision with the highest AI tech cycle trade exposure?,1,1,1,1,1
+Q27,chart,When was global public debt at its highest in the long-run chart?,2,1,1,1,1
+Q28,chart,Which two countries had a positive primary balance in 2015–19?,1,1,1,1,1
+Q29,chart,Which country has the longest average maturity of outstanding debt?,1,1,1,1,1
+Q30,chart,Which major economy has the lowest policy rate?,3,5,3,5,1
+Q31,scan-faded,Who was the Registrar on the chancery side at the Embassy of India in Bangkok?,1,1,1,1,1
+Q32,scan-faded,Who resumed charge at the Supreme Court after his leave expired?,1,1,1,1,1
+Q33,scan-faded,Who was the Superintendent of the Regional Passport Office in Delhi?,1,1,1,1,2
+Q34,scan-faded,"Which Research Officer of the Labour Bureau, Simla was granted earned leave?",1,1,1,1,1
+Q35,scan-faded,Who was India's Permanent Representative to the United Nations in New York?,2,1,1,1,1
+Q36,scan-faded,Whose appointment as Chief Librarian in the Lok Sabha Secretariat was extended?,1,1,1,1,
+Q37,scan-clean,Which city in Michigan is mentioned in the EPA letter?,1,1,1,1,1
+Q38,scan-clean,Which rule does the EPA letter ask states to implement properly?,2,2,2,1,2
+Q39,scan-clean,Which water systems should states prioritize for transparency?,3,2,3,1,1
+Q40,formula-table,What is the maximum path length for recurrent layers?,1,1,1,1,
+Q41,formula-table,Which layer type has a maximum path length of O(log_k(n))?,1,1,1,1,

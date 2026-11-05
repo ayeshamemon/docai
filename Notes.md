@@ -217,9 +217,87 @@ After adding table row-splitting and sentence splitting (Apple 10-K):
 
 **Key finding: dense and BM25 fail on different questions; hybrid fails on none.**
 
-**Finding: the reranker gave no measurable gain over hybrid** on this set (same 11/11, same mean rank 1.73): it helped T13 (4 → 1) but lowered tables/OCR (T1 3 → 4, T10 2 → 4), and costs a ~1 GB model plus extra latency. Only 11 questions, so not conclusive → default set to hybrid; rerank kept as an option and re-tested in the Step 4 evaluation.
+**(Superseded by the 55-question evaluation below.)** **Finding: the reranker gave no measurable gain over hybrid** on this set (same 11/11, same mean rank 1.73): it helped T13 (4 → 1) but lowered tables/OCR (T1 3 → 4, T10 2 → 4), and costs a ~1 GB model plus extra latency. Only 11 questions, so not conclusive → default set to hybrid; rerank kept as an option and re-tested in the Step 4 evaluation.
 
 **Lesson: `--find` keywords must be unique to the answer chunk.** "Complexity per Layer" first gave dense a false rank 1, because Section 4's text also says "the total computational complexity per layer". A row label only in Table 1 ("Self-Attention (restricted)") gave the true rank (15).
+
+---
+
+## Step 2.5: Visual retrieval (ColPali family)
+
+**Setup**
+- Model: `vidore/colSmol-256M` (ColPali-style late interaction, via `colpali-engine`), on the Mac GPU (MPS) in float32
+- Only pages where text fails are indexed: scanned pages + pages with figures (IMF: 22 of 46 pages); digital text pages are left to hybrid search
+- Each page image → 1,139 patch vectors (128-d) → one Qdrant point in collection `docai_pages`, scored with MaxSim
+- Indexing speed: ~7 s per page on a MacBook Air (22 IMF pages in 158 s)
+- Answering: `ask.py --images N` sends the top-N page images to Gemini together with the text chunks
+
+**Engineering findings**
+- ColQwen2.5 (3B, ~7.5 GB) and ColSmol-256M both crashed (segfault) while loading their adapter straight onto MPS in bfloat16. Fix: load in float32 on CPU first, then move to MPS. (Not a memory problem: the 500 MB model crashed the same way.)
+- ColSmol-256M is used locally; ColQwen2.5 remains an option on a CUDA GPU (Kaggle/Colab)
+
+**First results (IMF charts, page 9)**
+
+| Test | Dense | BM25 | Hybrid | Rerank | Visual |
+|---|---|---|---|---|---|
+| T8 commodity peak | ❌ 17 | ✅ 2 | ✅ 5 | ✅ 1 | ❌ 6 |
+| T9 structural balance 2025 | ❌ 13 | ✅ 1 | ✅ 2 | ✅ 1 | ✅ 1 |
+
+- Text modes find page 9 through its caption and panel titles, but those chunks do not contain the chart values → for charts, a text hit = page found, not answer found
+
+**First end-to-end chart answer (T9, `--images 2`)**
+- Visual search put page 9 at #1 (score 17.4); Gemini read Figure 1.9 panel 3
+- ✅ "Emerging market and developing economies, approximately −0.3 percentage points [p. 9]"
+- ❌ also claimed advanced economies were slightly negative in 2025; their 2025 bar is slightly positive (~+0.01), the 2026 bar is slightly negative
+- **Finding:** the VLM reads main values correctly but confuses near-zero bars in adjacent years (144 DPI full-page image). Retrieval was correct, the answer only half correct → evaluate final answers, not only retrieval
+
+---
+
+## Retrieval evaluation (55 questions, 6 documents)
+
+**Setup**
+- `backend/eval/questions.jsonl`: 55 questions over 6 documents (Apple 10-K, Attention, BERT, IMF WEO ch. 1, Gazette 1960 faded scan, EPA letter clean scan); 9 categories
+- Each question: answer, a keyword unique to the answer chunk, and the answer page; answers drafted from the PDF text/charts and checked against the page
+- `backend/eval/run_retrieval.py`: runs every question in every mode (models loaded once), validates keywords against the chunks first, reports hit@5 and MRR per category, saves `results_retrieval.csv`
+- Judging: text modes by keyword (charts/T11: by page = "page found", not "answer found"); visual by page, only for chart/scan questions (only those pages are in the visual index)
+
+**Results**
+
+| Category (n) | Dense | BM25 | Hybrid | Rerank | Visual |
+|---|---|---|---|---|---|
+| chart (7) | 86% / 0.59 | 100% / 0.81 | 100% / 0.79 | 100% / 0.89 | 86% / 0.88 |
+| exact-term (6) | 83% / 0.74 | 83% / 0.77 | 83% / 0.74 | 83% / 0.85 | |
+| formula-table (3) | 67% / 0.69 | 100% / 1.00 | 100% / 0.78 | 100% / 0.75 | |
+| number (11) | 91% / 0.74 | 100% / 0.69 | 100% / 0.79 | 100% / 0.95 | |
+| prose (4) | 100% / 0.81 | 100% / 1.00 | 100% / 1.00 | 100% / 1.00 | |
+| scan-clean (4) | 100% / 0.71 | 100% / 0.75 | 100% / 0.71 | 100% / 0.88 | 100% / 0.88 |
+| scan-faded (8) | 88% / 0.82 | 88% / 0.89 | 100% / 0.94 | 88% / 0.80 | 100% / 0.86 |
+| synonym (7) | 100% / 0.83 | 57% / 0.53 | 86% / 0.78 | 100% / 0.86 | |
+| table (5) | 80% / 0.39 | 40% / 0.24 | 80% / 0.30 | 100% / 0.67 | |
+| **ALL** | **89% / 0.71** | **85% / 0.73** | **95% / 0.77** | **96% / 0.86** | **94% / 0.87** (18) |
+
+(hit@5 / MRR)
+
+**Findings**
+- **The reranker helps, which reverses the 11-question result.** On 11 questions rerank tied hybrid (mean rank 1.73); on 55 it is clearly best (MRR 0.77 → 0.86), mostly by ranking the answer higher: tables 0.30 → 0.67 (hit@5 80% → 100%; Q03 Greater China found only by rerank), numbers 0.79 → 0.95, synonyms (Q22: hybrid 8 → rerank 1). A small test set gave a wrong conclusion.
+- The reranker is still weaker on noisy text: faded scans 88% vs hybrid 100% (T11 rank 6), formula tables MRR 0.75 vs BM25 1.00
+- Dense vs BM25 complementarity confirmed at scale: BM25 fails synonyms (57%) and tables (40%); dense fails formula tables (67%); hybrid 95%
+- **Q12 fails in every mode** ("How many attention heads?" → `h = 8` at rank 8–10): many chunks discuss "heads" (multi-head attention, Table 3 head-count variations), while the `h = 8` sentence sits in an equation-heavy chunk. Open issue.
+- Charts: text modes found the chart page as often as visual search (rerank 100%, T8 at #1 vs visual #6), but text chunks lack chart values; visual found pages whose text OCR broke (T11: visual 2 vs rerank 6)
+
+**Decisions**
+- Default text mode → **rerank** (justified by MRR 0.86 at ~1 GB model + extra latency; hybrid kept as the faster option)
+- Page images for answers → **combined**: top visual page + pages of the top rerank chunks that are in the visual index (figure/scanned pages), capped at 3 images (`ask.py --images`, default 3)
+
+**First answers with the combined page images**
+- T8 ("Which commodity price index peaks highest and when?"): page 9 sent via the text hit. Gemini answered **Precious metals** (~2025:Q4–2026:Q1). **This exposed an error in our ground truth:** Precious metals is on the right-hand scale (0–250); we had compared lines visually and picked Energy (~150 on the left scale). Precious metals' solid line peaks ~185–190 → Gemini picked the right series but overestimated the value (225–230). T8 answer corrected.
+- T11 ("Who was granted earned leave for 17 days?"): ❌ "couldn't find". Page 4 was not sent: the top rerank hit was low-confidence (score −3.6) but its pages (8, 9) took 2 of 3 image slots and pushed out visual #2 (page 4).
+- Fix: text-guided pages only from rerank hits with score > 0 (T8 top hit 0.159 → used; T11 −3.6 → skipped). Threshold chosen from two examples → confirm in the Step 4 answer evaluation. (In hybrid mode the RRF scores are always > 0, so the filter does not apply there.)
+
+- T11 after the fix: ✅ "Shri S. S. Saith, a permanent Librarian in the Ministry of External Affairs, was granted earned leave for 17 days from January 12, 1960, to January 28, 1960 [p. 4]." All 5 text hits scored below 0 (−3.6 to −4.9) → their pages skipped → images = visual pages 3, 4, 9. Gemini read "17 days" and the dates from the faded page image; OCR had produced "ear   s       ty" and "fanuary". (Jan 12–28 inclusive = 17 days.)
+- **Key result: an answer no text-based RAG can give.** The information does not exist in the extracted text; only page-image retrieval + a VLM recovers it.
+
+**Caveats:** questions written by one person (drafted from the PDFs); judged by keyword/page, not by the final answer; 55 questions is still small → answer-level evaluation in Step 4
 
 ## Where dense retrieval fails: test questions
 
@@ -265,6 +343,7 @@ Run each question in every retrieval mode as it gets built, and fill in the resu
 ## To improve later
 - ~~Merge tiny chunks (< ~30 words) into a neighbouring chunk~~ → done (rule 7)
 - ~~Attach a table's intro sentence to the table chunk~~ → done (rule 6)
+- ~~Long split-table headers repeated in every part~~ → fixed: Gazette p. 12 (a two-column name list) was parsed as one giant table whose "header row" was full of names; splitting it into 41 parts repeated that header in each, so "Menon" was in 44 of 138 chunks. Now captions/headers are repeated only if ≤ 40 words; otherwise first part only, later parts get "(table continued)".
 - Keep only the best-scoring part of a split table in the final results (avoid one table filling several slots)
 - Drop text chunks whose body is only a number or year (e.g. "2025" between two tables)
 
