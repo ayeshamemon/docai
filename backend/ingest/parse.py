@@ -1,8 +1,8 @@
 """
-Step 1 — PDF ingestion pipeline.
+Step 1 — PDF parsing (ingest/parse.py).
 
 Usage:
-    python ingest.py path/to/file.pdf [--out data/processed]
+    python ingest/parse.py path/to/file.pdf [--out data/processed]
 
 Output (per document):
     data/processed/<doc_id>/elements.json   -> list of text/table/figure elements

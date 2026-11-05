@@ -6,7 +6,7 @@ Running log of design decisions, experiments and findings. Turn these into READM
 
 ## Step 1: PDF ingestion
 
-**Pipeline (`ingest.py`)**
+**Pipeline (`ingest/parse.py`)**
 1. Hash the file → `doc_id` (re-uploads are skipped: cache)
 2. PyMuPDF: label every page digital / scanned / blank, and save a PNG of each page
 3. Decide OCR: any scanned page → OCR on; ≥50% scanned → forced full-page OCR

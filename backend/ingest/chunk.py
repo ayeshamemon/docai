@@ -1,18 +1,19 @@
 """
 Step 2.1 — Chunking.
 
-A heading starts a new chunk
-Each chunk gets its heading on top
-Paragraphs are joined whole, up to 300 words
-Tables are their own chunk, and big ones are split by rows with the header repeated
-Figures with captions are their own chunk
-The table intro sentence is attached to its table (new)
-Tiny chunks under 30 words are merged into a neighbor (new)
-A giant paragraph is split at sentence ends (rare)
-
-
-Turns elements.json (small pieces from ingest.py) into chunks.json
+Turns elements.json (small pieces from parse.py) into chunks.json
 (meaningful blocks we will search later).
+
+Rule-based, structure-aware chunking (no model). Rules:
+  1. A heading starts a new chunk
+  2. Each chunk gets its heading on top
+  3. Paragraphs are joined whole, up to 300 words (MAX_WORDS, heading included)
+  4. Tables are their own chunk; big ones are split by rows with the header repeated
+  5. Figures with captions are their own chunk (figures without captions are skipped)
+  6. The table intro sentence ("The following table shows...") is attached to its table
+  7. Tiny text chunks under 30 words (MIN_WORDS) are merged into a neighbour
+  8. A giant paragraph (longer than the limit by itself) is split at sentence ends (rare)
+Every chunk keeps its pages and bounding boxes, for clickable citations.
 
 Usage:
     python ingest/chunk.py data/processed/<doc_id>                  # default 300 words
@@ -120,7 +121,7 @@ def chunk_document(doc_dir: Path, max_words: int = MAX_WORDS) -> list[dict]:
     for el in elements:
         content = el["content"].strip()
 
-        # Rule 2: a heading closes the current chunk and becomes the new context
+        # Rules 1+2: a heading closes the current chunk and becomes the heading of the next ones
         if el["type"] == "text" and el["label"] in HEADING_LABELS:
             flush()
             heading = content
@@ -128,7 +129,7 @@ def chunk_document(doc_dir: Path, max_words: int = MAX_WORDS) -> list[dict]:
 
         budget = max_words - words(heading)  # room left after the heading
 
-        # Rule 3: tables are their own chunk; big tables are split by rows
+        # Rule 4: tables are their own chunk; big tables are split by rows
         if el["type"] == "table":
             # Rule 6: pull the table's intro sentence ("The following table shows...")
             # out of the text buffer and put it on top of the table
@@ -146,17 +147,17 @@ def chunk_document(doc_dir: Path, max_words: int = MAX_WORDS) -> list[dict]:
                                          text_override=piece))
             continue
 
-        # Rule 4: figures only if they have a caption (charts get handled by ColPali later)
+        # Rule 5: figures only if they have a caption (charts get handled by ColPali later)
         if el["type"] == "figure":
             if content:
                 flush()
                 chunks.append(make_chunk(doc_id, len(chunks), "figure", heading, [el]))
             continue
 
-        # Rule 1: normal text — add to buffer, close it when it gets too big
+        # Rule 3: normal text — add whole paragraphs to the buffer, close it when it gets too big
         if not content:
             continue
-        # Rule 5: a single giant paragraph is split at sentence ends
+        # Rule 8: a single giant paragraph is split at sentence ends
         if words(content) > budget:
             flush()
             for piece in split_paragraph(content, budget):
