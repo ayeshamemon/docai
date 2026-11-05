@@ -17,7 +17,9 @@ Model: set VISUAL_MODEL in .env to switch (default ColQwen2.5; ColSmol is much f
 """
 
 import argparse
+import contextlib
 import json
+import threading
 import os
 import time
 import uuid
@@ -37,6 +39,7 @@ PATCH_DIM = 128          # every patch / query token becomes 128 numbers
 
 _model = None
 _processor = None
+_model_lock = threading.Lock()   # the model is used by one thread at a time (upload worker vs /chat)
 
 
 # ---------- model ----------
@@ -79,7 +82,7 @@ def embed_image(path: str) -> list[list[float]]:
     """One page image -> many patch vectors (multi-vector)."""
     model, proc = get_visual_model()
     batch = proc.process_images([Image.open(path).convert("RGB")]).to(model.device)
-    with torch.no_grad():
+    with _model_lock, torch.no_grad():
         emb = model(**batch)[0]                          # (num_patches, 128)
     mask = batch["attention_mask"][0].bool()             # drop padding positions
     return emb[mask].float().cpu().tolist()
@@ -89,7 +92,7 @@ def embed_query(query: str) -> list[list[float]]:
     """One question -> one vector per token."""
     model, proc = get_visual_model()
     batch = proc.process_queries([query]).to(model.device)
-    with torch.no_grad():
+    with _model_lock, torch.no_grad():
         emb = model(**batch)[0]
     mask = batch["attention_mask"][0].bool()
     return emb[mask].float().cpu().tolist()
@@ -140,23 +143,33 @@ def select_pages(doc_dir: Path, all_pages: bool = False) -> list[dict]:
     return chosen
 
 
-def add_document(doc_dir: Path, client: QdrantClient, all_pages: bool = False) -> int:
+def add_document(doc_dir: Path, client: QdrantClient, all_pages: bool = False,
+                 lock=None, on_page=None) -> int:
+    """lock: optional threading.Lock held only while writing to Qdrant.
+    on_page(done, total): optional progress callback (the API uses it for the status)."""
+    lock = lock or contextlib.nullcontext()
     meta = json.loads((doc_dir / "meta.json").read_text())
     doc_id = meta["doc_id"]
     pages = select_pages(doc_dir, all_pages)
 
-    client.delete(PAGE_COLLECTION, points_selector=models.FilterSelector(filter=doc_filter(doc_id)))
+    with lock:
+        client.delete(PAGE_COLLECTION, points_selector=models.FilterSelector(filter=doc_filter(doc_id)))
+    if on_page:
+        on_page(0, len(pages))
     t0 = time.time()
     for i, p in enumerate(pages, 1):
-        vecs = embed_image(p["image"])
-        client.upsert(PAGE_COLLECTION, points=[models.PointStruct(
-            id=page_point_id(doc_id, p["page"]),
-            vector={"colpali": vecs},
-            payload={"doc_id": doc_id, "page": p["page"], "image": p["image"],
-                     "reason": p["reason"], "filename": meta["filename"]},
-        )])
+        vecs = embed_image(p["image"])                   # slow part: no Qdrant lock
+        with lock:
+            client.upsert(PAGE_COLLECTION, points=[models.PointStruct(
+                id=page_point_id(doc_id, p["page"]),
+                vector={"colpali": vecs},
+                payload={"doc_id": doc_id, "page": p["page"], "image": p["image"],
+                         "reason": p["reason"], "filename": meta["filename"]},
+            )])
         print(f"  page {p['page']:>3} ({p['reason']:<7}) {len(vecs)} patches  "
               f"[{i}/{len(pages)}, {time.time() - t0:.0f}s]", flush=True)
+        if on_page:
+            on_page(i, len(pages))
     return len(pages)
 
 

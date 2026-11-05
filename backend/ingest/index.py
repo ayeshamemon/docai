@@ -12,6 +12,7 @@ Search lives in retrieval/search.py.
 """
 
 import argparse
+import contextlib
 import json
 import uuid
 from pathlib import Path
@@ -69,28 +70,31 @@ def doc_filter(doc_id: str) -> models.Filter:
         key="doc_id", match=models.MatchValue(value=doc_id))])
 
 
-def add_document(doc_dir: Path, client: QdrantClient) -> int:
+def add_document(doc_dir: Path, client: QdrantClient, lock=None) -> int:
+    """lock: optional threading.Lock held only while writing to Qdrant (the API passes one,
+    so /chat can still use Qdrant while the slow embedding runs)."""
+    lock = lock or contextlib.nullcontext()
     chunks = json.loads((doc_dir / "chunks.json").read_text())
     doc_id = chunks[0]["doc_id"]
     texts = [c["text"] for c in chunks]
 
-    # re-indexing the same doc? remove its old points first
-    client.delete(COLLECTION, points_selector=models.FilterSelector(filter=doc_filter(doc_id)))
-
-    dense_vecs = list(get_dense().passage_embed(texts, batch_size=32))
+    dense_vecs = list(get_dense().passage_embed(texts, batch_size=32))   # slow part: no lock
     sparse_vecs = list(get_sparse().embed(texts, batch_size=32))
 
-    client.upsert(COLLECTION, points=[
-        models.PointStruct(
-            id=point_id(c["chunk_id"]),
-            vector={
-                "dense": d.tolist(),
-                "bm25": models.SparseVector(indices=s.indices.tolist(), values=s.values.tolist()),
-            },
-            payload=c,
-        )
-        for c, d, s in zip(chunks, dense_vecs, sparse_vecs)
-    ])
+    with lock:
+        # re-indexing the same doc? remove its old points first
+        client.delete(COLLECTION, points_selector=models.FilterSelector(filter=doc_filter(doc_id)))
+        client.upsert(COLLECTION, points=[
+            models.PointStruct(
+                id=point_id(c["chunk_id"]),
+                vector={
+                    "dense": d.tolist(),
+                    "bm25": models.SparseVector(indices=s.indices.tolist(), values=s.values.tolist()),
+                },
+                payload=c,
+            )
+            for c, d, s in zip(chunks, dense_vecs, sparse_vecs)
+        ])
     return len(chunks)
 
 

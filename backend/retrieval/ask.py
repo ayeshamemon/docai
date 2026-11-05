@@ -90,11 +90,15 @@ def pick_pages(question: str, hits: list[dict], doc_id: str | None, n: int,
     Pass `client` to reuse an open Qdrant connection (the API server does)."""
     if n <= 0:
         return []
-    from ingest.index import get_client
+    from ingest.index import doc_filter, get_client
     from ingest.visual_index import PAGE_COLLECTION, get_page_client, page_point_id
 
     own = client is None
     client = get_page_client(client or get_client())
+    if doc_id and client.count(PAGE_COLLECTION, count_filter=doc_filter(doc_id)).count == 0:
+        if own:                                  # this document has no page images
+            client.close()                       # (e.g. a digital 10-K): skip ColSmol, ~1-2 s
+        return []
     chosen, seen = [], set()
 
     def add(p):
