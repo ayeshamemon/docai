@@ -35,7 +35,7 @@ load_dotenv()
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "")   # optional, used if MODEL stays busy
 MAX_RETRIES = 3
-GEMINI_TIMEOUT_S = int(os.environ.get("GEMINI_TIMEOUT_S", "30"))   # per Gemini call
+GEMINI_TIMEOUT_S = int(os.environ.get("GEMINI_TIMEOUT_S", "90"))   # per Gemini call; answers with page images can take 30-60 s
 TOP_K = 5
 DEFAULT_IMAGES = 3   # max page images per answer (cost/latency cap)
 TEXT_PAGE_MIN_SCORE = 0.0   # rerank score a text hit needs before its page images are used
@@ -56,7 +56,8 @@ SYSTEM_PROMPT = """You answer questions about PDF documents using ONLY the sourc
 
 Rules:
 - Use only facts from the sources. Do not use outside knowledge.
-- After every fact, cite its page like [p. 6]. Use the page numbers shown in the source headers.
+- After every fact, cite its page like [p. 6] or [p. 6, 7]. Use the page numbers shown in the
+  source headers. Cite pages only: never write "Source 1" or "Page image" in a citation.
 - Tables are in Markdown; read rows and columns carefully, and say which year or column a number comes from.
 - Some sources are PAGE IMAGES. Read charts, figures and scanned text from them directly.
   For charts, give approximate values and say they are read from the chart.
@@ -164,7 +165,7 @@ def generate(contents):
                 return                                    # success
             except (errors.ServerError, errors.ClientError, httpx.TimeoutException) as e:
                 code = "timeout" if isinstance(e, httpx.TimeoutException) else getattr(e, "code", None)
-                busy = code in (429, 500, 503, "timeout")
+                busy = code in (429, 500, 503, 504, "timeout")   # 504 = deadline exceeded on Google's side
                 if started or not busy:                   # mid-answer failure or real error: stop
                     raise                                 # real error (bad key, bad model): stop
                 last_error = e
