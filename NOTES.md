@@ -329,6 +329,51 @@ After adding table row-splitting and sentence splitting (Apple 10-K):
 
 **VLM limitation seen again:** chart peak values overestimated (Energy peak ~305 read as 330–350 on IMF Fig. 1.SF.1; earlier 187 read as 225–230). Series and timing were right.
 
+---
+
+## Step 4.1: Answer evaluation (final answers, not just retrieval)
+
+**Setup (`backend/eval/run_answers.py`)**
+- Same pipeline as the app: rerank (top 5 chunks) + up to 3 page images → answer
+- Answer model `gemini-3.6-flash`, no fallback (one model for every answer)
+- Judge: a **different** model, `gemini-3.8-flash`, temperature 0, JSON verdict: correct / partial / wrong / abstained + short reason, against the reference answer
+- Model-free citation checks: **evidence** (a cited page holds the answer: keyword in a retrieved chunk on that page, or the expected page for charts/scans) and **grounded** (every cited page was given to the model)
+- Resumable: results saved after each question (`eval/answers.jsonl`); summary → `eval/results_answers.csv`
+
+**Results (55 questions, 6 documents)**
+
+| Category (n) | Correct | Partial | Wrong | Abstained | Evidence | Grounded | Avg s |
+|---|---|---|---|---|---|---|---|
+| chart (7) | 86% | 14% | 0% | 0% | 100% | 100% | 12.1 |
+| exact-term (6) | 83% | 0% | 0% | 17% | 100% | 100% | 7.0 |
+| formula-table (3) | 100% | 0% | 0% | 0% | 100% | 100% | 7.5 |
+| number (11) | 100% | 0% | 0% | 0% | 100% | 100% | 5.3 |
+| prose (4) | 100% | 0% | 0% | 0% | 100% | 100% | 4.5 |
+| scan-clean (4) | 100% | 0% | 0% | 0% | 100% | 100% | 5.9 |
+| scan-faded (8) | 100% | 0% | 0% | 0% | 100% | 100% | 9.1 |
+| synonym (7) | 100% | 0% | 0% | 0% | 100% | 100% | 5.2 |
+| table (5) | 100% | 0% | 0% | 0% | 100% | 100% | 4.9 |
+| **ALL (55)** | **96%** | **2%** | **0%** | **2%** | **100%** | **100%** | **7.0** |
+
+**Findings**
+- **No wrong answers and no hallucinated citations** (100% grounded): when the answer was not retrieved, the system abstained (Q12, "How many attention heads?", the one question retrieval missed in every mode)
+- **Faded scans 100% correct**, including T11 ("17 days" destroyed by OCR, recovered from the page image)
+- **Only weakness: exact values read from charts** (T9 partial: one group right, a near-zero bar misread)
+- **Run-to-run variation:** T8 was partial in run 1 and correct in run 2 (temperature 0.2; the chart is read slightly differently each time). Chart answers fluctuate between partial and correct; a single run per question is not fully stable
+
+**Bug found by the evaluation: citation format on scanned documents**
+- Run 1 showed "evidence ✗" on 5 correct scan answers (T10, T12, Q32, Q34, Q38). Cause: with page images in the prompt, the model copied the source labels and wrote `[Source 4, p. 2, 3; Page image, p. 3]`; both parsers only read brackets starting with "p.", so they found **no** citations, and in the app those answers had no clickable citations
+- Fix: the prompt asks for `[p. N]` only, and both parsers (app + evaluation) read `p. N` anywhere inside a bracket
+- Run 2: evidence 91% → **100%**; correct 95% → 96%; partial 4% → 2%; avg time 9.3 s → 7.0 s
+
+**Human spot-check**
+- 15 random answers graded by hand without seeing the judge's verdict: **15/15 agreement** with the judge
+- All 15 sampled answers were "correct" (expected when 96% are), so this validates the judge's "correct" verdicts only; the non-correct verdicts (T9 partial, Q12 abstained) checked separately
+
+**Caveats**
+- Questions were written by one person from the same documents, mostly single-fact lookups → an easy test; real questions are vaguer
+- Judge and answerer are different models but the same family (Gemini) → human spot-check below
+
 ## Where dense retrieval fails: test questions
 
 Run each question in every retrieval mode as it gets built, and fill in the result columns
