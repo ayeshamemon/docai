@@ -429,3 +429,85 @@ Run each question in every retrieval mode as it gets built, and fill in the resu
 - Chunk size 150 / 300 / 500 on retrieval accuracy (not just structure)
 - Later: dense vs. hybrid vs. ColPali vs. GraphRAG vs. agentic on one test set
 - Optional: RapidOCR vs. ocrmac on the faded Gazette scan
+
+---
+
+# Step 5: GraphRAG
+
+## The plan (what GraphRAG is here)
+Plain search finds chunks that *sound like* the question. It fails when the answer needs two facts in two places and the second one does not sound like the question. GraphRAG builds a map of the document (things and how they are connected) and walks that map from what search found to what it missed.
+
+1. **5.1 Multi-hop test set**: questions that need two facts from two places, plus a baseline with today's search.
+2. **5.2 Extraction**: Gemini reads every chunk and returns entities and relationships, each relationship with an exact evidence quote that the code checks.
+3. **5.3 Merging + structural edges**: the same entity from many chunks becomes one node; add edges from the document's layout. Store as a NetworkX graph per document; entity vectors in Qdrant (`docai_entities`).
+4. **5.4 Graph search**: question → matching entities → walk 1–2 hops → their chunks → reranker → Gemini. Two modes: `graph` and `graph+hybrid` (graph chunks added to the usual reranked chunks).
+5. **5.5 Evaluation** against the baseline, plus a hand check of merges.
+6. **5.6 "Graph" mode in the UI.**
+7. **5.7 (optional)** communities (clusters of entities with summaries) for broad questions.
+
+**Edges come from two sources only:** relationships stated in the text (with an evidence quote) and structural edges from the document layout.
+
+## Step 5.1: Multi-hop test set and baseline
+
+**What a multi-hop question is here:** the answer needs two facts that sit in two different chunks (usually two pages). Each question has `keywords` (one per fact) and `pages`.
+
+**How keywords are used (eval only, never sent to the RAG model):**
+- Search check (`run_retrieval.py`): a question counts as found only when **every** keyword is in the top 5. Rank = the rank at which the last fact appears.
+- Answer check (`run_answers.py`): "cites evidence" only if the answer cites a page for **every** fact. Correctness is judged by a different model against a hand-written reference answer.
+- `--check` validates the questions file: keyword not in any chunk (typo or OCR), keyword in more than 3 chunks (too common), and **one chunk holds every keyword** (not really multi-hop).
+
+**Two kinds of multi-hop question:**
+- **Bridge (12):** you only know what to search for second after finding fact 1 ("Which product grew fastest, and *why*?" → iPhone → "Pro models"). This is where GraphRAG should help.
+- **Compare (14):** the question names both facts ("What was R&D expense, and how many employees?"). Search can match each half on its own words.
+
+**Challenges and fixes:**
+- **M06 was not really multi-hop:** the Attention abstract says "28.4 BLEU ... 3.5 days" in one sentence. `--check` caught it; replaced with "parameters (Table 3, p. 9) + training time (p. 7)".
+- **The second batch was too easy:** 9 of 10 new questions were found by rerank, because they were two questions joined with "and". This led to splitting multi-hop into bridge and compare, and writing 5 more real bridge questions (M22–M26).
+- **The summary grouped old answers under the old label:** each saved answer keeps the category it had when it ran. Fixed: the summary reads categories from `questions.jsonl`.
+- No Gazette or handwritten questions in the new batches: OCR text is too unreliable for exact keywords.
+- Keyword rule: short, exact text from the answer's location, unique (1–3 chunks); "intensify for memory" is in 4 chunks because Apple repeats it in risk factors; kept, since any of them answers that half.
+
+**Baseline (rerank, before any graph):**
+
+| | n | Search hit@5 | Answers correct | Partial | Abstain | Wrong |
+|---|---|---|---|---|---|---|
+| **Bridge** | 12 | **42%** | **50%** | 33% | 17% | 0% |
+| Compare | 14 | 79% | 86% | 14% | 0% | 0% |
+| Single-fact | 55 | 96% | ~96% | | | |
+
+**Findings:**
+- Fact 1 is almost always found; **fact 2 is what is missing** (often rank 6–9, or not in the top 30 when it does not sound like the question: M01 "why" vs. "Pro models", M09 "hardware" vs. "16 Cloud TPUs").
+- **Wrong = 0%**: when a fact is missing, the model leaves it out or says it cannot find it. So more evidence should turn partials directly into corrects.
+- Answers beat search (50% vs 42%) because page images sometimes cover the missing fact (M10: oil price).
+- On multi-hop, hybrid was not better than BM25 (fusion pushed second facts down); rerank was best.
+
+**Targets for GraphRAG:** bridge answers up from 50%; compare stays at ~86%; single-fact must not drop from ~96%.
+
+Baseline saved as `eval/answers_baseline_multihop.jsonl`, `eval/results_retrieval_baseline.csv`, `eval/results_answers_baseline.csv`.
+
+## Step 5.2: Entity and relationship extraction (`backend/graph/extract.py`)
+
+**What happens:** each chunk (≥ 8 words) is sent to Gemini (`gemini-3.6-flash`, temperature 0, JSON output). Results are saved per chunk in `data/processed/<doc_id>/graph/extractions.jsonl`; the run resumes where it stopped.
+
+**Entity rules (prompt):**
+- Important named things only, name as written, short.
+- One of 8 fixed types: Organization, Person, Product, Place, Date, Metric, Concept, Event (generic, so it works for any PDF).
+- Metric = a named measurement, with the number in the description ("iPhone net sales 2026 → $254,098M, up 21%").
+- Description: one sentence, facts from this chunk only.
+- Skip generic words ("the Company", "this section") and labels of document parts ("Table 3", "Section 3.2"): they are not entities.
+
+**Relationship rules (prompt):**
+- Only links the text states; no outside knowledge.
+- Source and target must be from the entity list.
+- Description (how they are related), strength 1–10, and an evidence quote of 5–25 words copied word for word. No quote → no relationship.
+
+**Checks in code (the model cannot get past these):**
+- Evidence quote must be in the chunk (ignoring case, spacing, table pipes, "$ 254" vs "$254"); at least 8 characters. Otherwise dropped as invented.
+- Both ends must be entities of that chunk; no self-links.
+- Unknown type → Concept; duplicate names in a chunk kept once; strength clamped to 1–10.
+
+So every edge can be traced to an exact sentence in the PDF.
+
+**Description vs. evidence:** the description is the model's own words (used for search and merging; could be slightly off); the evidence is an exact quote (proof, checked). At answer time Gemini still gets the original chunks, not just descriptions.
+
+**First test (Attention paper, 5 chunks):** 42 entities, 24 relationships, **100% kept** (0 bad evidence, 0 unknown entities). Quality good ("Transformer → Self-attention", "Transformer → Multi-Head Attention"; ByteNet / ConvS2S / Extended Neural GPU described in comparison). About 11 s per chunk: fine for 46 chunks (~8 min), slow for the Apple 10-K (hundreds of chunks); parallel calls may be needed. Still to check: table chunks (numbers in rows).

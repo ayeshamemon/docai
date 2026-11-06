@@ -8,6 +8,8 @@ Usage (run from backend/):
 
 How a question is judged
   - text modes (dense/bm25/hybrid/rerank): rank of the first chunk that contains `keyword`
+    (multi-hop questions have `keywords`: the rank at which EVERY part has been found,
+     so hit@5 means the model received all the evidence it needs)
     (if a question has no keyword, e.g. charts, the rank of the first chunk on `page`:
      that means "found the page", NOT "found the answer")
   - visual: rank of `page` among page images. Only for chart / scan questions, because
@@ -49,16 +51,34 @@ def check(questions):
             ok = False
             continue
         chunks = chunks_cache.setdefault(q["doc"], json.loads(f.read_text()))
-        if not q["keyword"]:
-            continue
-        n = sum(q["keyword"].lower() in c["text"].lower() for c in chunks)
-        if n == 0:
-            print(f"  {q['id']:<5} ❌ keyword {q['keyword']!r} not in any chunk (OCR/parse differs?)")
-            ok = False
-        elif n > 3:
-            print(f"  {q['id']:<5} ⚠️  keyword {q['keyword']!r} is in {n} chunks (too common)")
+        for kw in keywords_of(q):
+            n = sum(kw.lower() in c["text"].lower() for c in chunks)
+            if n == 0:
+                print(f"  {q['id']:<5} ❌ keyword {kw!r} not in any chunk (OCR/parse differs?)")
+                ok = False
+            elif n > 3:
+                print(f"  {q['id']:<5} ⚠️  keyword {kw!r} is in {n} chunks (too common)")
+        # a multi-hop question must really need two places: no single chunk may hold every part
+        kws = q.get("keywords") or []
+        if len(kws) > 1 and any(all(k.lower() in c["text"].lower() for k in kws) for c in chunks):
+            print(f"  {q['id']:<5} ⚠️  one chunk holds every part {kws}: not really multi-hop")
     print("[check] all keywords found" if ok else "[check] fix the lines above")
     return ok
+
+
+def keywords_of(q: dict) -> list[str]:
+    """One keyword (single-fact questions) or several (multi-hop: every part must be found)."""
+    return q.get("keywords") or ([q["keyword"]] if q.get("keyword") else [])
+
+
+def evidence_rank(hits, q):
+    """Rank at which ALL parts of the evidence have been retrieved (0 = some part missing).
+    Single-keyword questions: the usual rank. No keyword (charts): rank of the page."""
+    kws = keywords_of(q)
+    if not kws:
+        return find_rank(hits, page=q["page"]) or 0
+    ranks = [find_rank(hits, keyword=k) for k in kws]
+    return 0 if any(r is None for r in ranks) else max(ranks)
 
 
 def run(questions, modes):
@@ -76,8 +96,7 @@ def run(questions, modes):
             else:
                 depth = CANDIDATES if mode == "rerank" else DEPTH
                 hits = SEARCHERS[mode](q["question"], client, depth, q["doc"])
-                r = find_rank(hits, keyword=q["keyword"]) if q["keyword"] \
-                    else find_rank(hits, page=q["page"])
+                r = evidence_rank(hits, q)
             row[mode] = r or 0                          # 0 = not found within depth
         rows.append(row)
         cells = "  ".join(f"{m}:{fmt(row[m])}" for m in modes)

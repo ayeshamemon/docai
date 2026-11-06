@@ -1,0 +1,13 @@
+id,category,question,rerank
+M01,multi-hop-bridge,"Which product category grew fastest in 2026, and what drove that growth?",0
+M02,multi-hop-bridge,"Which region had the fastest net sales growth in 2026, and why?",8
+M05,multi-hop-bridge,"By how much did Services net sales grow in 2026, and why did the Services gross margin increase?",9
+M08,multi-hop-bridge,"Which BERT model obtained a GLUE score of 80.5, and how many parameters does it have?",4
+M09,multi-hop-bridge,"How many layers does BERT-large have, and on what hardware and for how long was it pre-trained?",0
+M10,multi-hop-bridge,"What global growth does the IMF project for 2026, and what oil price is the forecast based on?",9
+M13,multi-hop-bridge,"Products gross margin rose partly due to tariff refunds. What was Products gross margin in 2026, and which ruling led to the refunds?",3
+M22,multi-hop-bridge,"Which reportable segment had the lowest net sales in 2026, and how did currency affect that segment?",6
+M23,multi-hop-bridge,"Which operating expense grew fastest in 2026, and what drove the increase?",3
+M24,multi-hop-bridge,"Which GPUs were used to train the Transformer, and what sustained TFLOPS value did the authors assume for that GPU when estimating training cost?",8
+M25,multi-hop-bridge,"What kind of positional encoding does the Transformer use, and what dev BLEU did the variant with learned positional embeddings get?",5
+M26,multi-hop-bridge,"BERT-base was sized to match which earlier model, and what GLUE average score did that model get?",5

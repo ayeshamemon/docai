@@ -107,16 +107,28 @@ def cited_pages(text: str) -> list[int]:
 
 
 def citation_checks(q: dict, answer: str, hits: list[dict], pages_sent: list[dict]) -> dict:
-    cited = cited_pages(answer)
+    cited = set(cited_pages(answer))
     given = {p for h in hits for p in h["pages"]} | {p["page"] for p in pages_sent}
-    if q["keyword"]:
-        kw = q["keyword"].lower()
-        evidence_pages = {p for h in hits if kw in h["text"].lower() for p in h["pages"]}
+    keywords = q.get("keywords") or ([q["keyword"]] if q.get("keyword") else [])
+
+    def pages_with(kw):
+        return {p for h in hits if kw.lower() in h["text"].lower() for p in h["pages"]}
+
+    if keywords:
+        # every part of the evidence must be cited (multi-hop: all parts; else the one keyword).
+        # A part that was not retrieved at all falls back to its expected page.
+        expected = q.get("pages") or [q["page"]]
+        parts = [pages_with(k) or ({expected[i]} if i < len(expected) else set())
+                 for i, k in enumerate(keywords)]
+        parts = [p for p in parts if p]
+        cites_evidence = all(cited & p for p in parts) if parts else None
     else:
         evidence_pages = {q["page"]} if q["page"] else set()
+        cites_evidence = bool(cited & evidence_pages) if evidence_pages else None
+
     return {
-        "cited_pages": cited,
-        "cites_evidence": bool(set(cited) & evidence_pages) if evidence_pages else None,
+        "cited_pages": sorted(cited),
+        "cites_evidence": cites_evidence,
         "grounded": all(p in given for p in cited) if cited else None,
     }
 
@@ -184,12 +196,21 @@ def summarize(rows: list[dict]):
     if not rows:
         print("[summary] nothing judged yet")
         return
+    # take the category from questions.jsonl, so relabelled questions group correctly
+    current = {}
+    qfile = Path(__file__).parent / "questions.jsonl"
+    for l in qfile.read_text().splitlines():
+        if l.strip():
+            q = json.loads(l)
+            current[q["id"]] = q["category"]
+    for r in rows:
+        r["category"] = current.get(r["id"], r["category"])
     groups = defaultdict(list)
     for r in rows:
         groups[r["category"]].append(r)
     groups["ALL"] = rows
 
-    head = f"{'category':<14}{'n':>4}  {'correct':>8}{'partial':>8}{'wrong':>7}{'abstain':>8}   {'evidence':>9}{'grounded':>9}{'avg s':>7}"
+    head = f"{'category':<18}{'n':>4}  {'correct':>8}{'partial':>8}{'wrong':>7}{'abstain':>8}   {'evidence':>9}{'grounded':>9}{'avg s':>7}"
     print("\n" + head + "\n" + "-" * len(head))
     for cat in sorted(k for k in groups if k != "ALL") + ["ALL"]:
         g = groups[cat]
@@ -199,7 +220,7 @@ def summarize(rows: list[dict]):
         avg = sum(r["total_s"] for r in g) / len(g)
         if cat == "ALL":
             print("-" * len(head))
-        print(f"{cat:<14}{len(g):>4}  {pct(c['correct'], len(g)):>8}{pct(c['partial'], len(g)):>8}"
+        print(f"{cat:<18}{len(g):>4}  {pct(c['correct'], len(g)):>8}{pct(c['partial'], len(g)):>8}"
               f"{pct(c['wrong'], len(g)):>7}{pct(c['abstained'], len(g)):>8}   "
               f"{pct(sum(ev), len(ev)):>9}{pct(sum(gr), len(gr)):>9}{avg:>7.1f}")
     print("\nevidence = a cited page holds the answer · grounded = every cited page was given to the model")
