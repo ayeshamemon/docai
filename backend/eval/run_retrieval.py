@@ -94,7 +94,7 @@ def run(questions, modes):
                 hits = SEARCHERS[mode](q["question"], client, DEPTH, q["doc"])
                 r = find_rank(hits, page=q["page"])
             else:
-                depth = CANDIDATES if mode == "rerank" else DEPTH
+                depth = CANDIDATES if mode in ("rerank", "graph", "graph-walk", "graph+rerank") else DEPTH
                 hits = SEARCHERS[mode](q["question"], client, depth, q["doc"])
                 r = evidence_rank(hits, q)
             row[mode] = r or 0                          # 0 = not found within depth

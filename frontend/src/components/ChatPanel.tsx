@@ -14,6 +14,7 @@ interface Message {
   timing?: Timing;
   error?: string;
   streaming?: boolean;
+  mode?: Mode;                // assistant: the retrieval mode used
 }
 
 /** Called when a citation or a source is clicked: jump to `page` and highlight `boxes`. */
@@ -23,6 +24,7 @@ interface Props {
   docId: string | null;
   docName?: string;
   onCite?: CiteHandler;
+  hasGraph?: boolean;         // GraphRAG built for this document: enables Graph mode
 }
 
 // Citations: any [...] bracket; inside it, every number list after p./pp./page counts.
@@ -71,7 +73,7 @@ const EXAMPLES = [
   "What do the charts or tables show?",
 ];
 
-export default function ChatPanel({ docId, docName, onCite }: Props) {
+export default function ChatPanel({ docId, docName, onCite, hasGraph = false }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<Mode>("rerank");
@@ -79,6 +81,9 @@ export default function ChatPanel({ docId, docName, onCite }: Props) {
   const [busy, setBusy] = useState(false);
   const abort = useRef<AbortController | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
+
+  // Graph mode only exists for documents with a graph; fall back if it disappears.
+  const activeMode: Mode = mode === "graph+rerank" && !hasGraph ? "rerank" : mode;
 
   // Keep the newest message in view while the answer streams.
   useEffect(() => {
@@ -105,12 +110,12 @@ export default function ChatPanel({ docId, docName, onCite }: Props) {
     setMessages((ms) => [
       ...ms,
       { role: "user", text: question },
-      { role: "assistant", text: "", question, streaming: true },
+      { role: "assistant", text: "", question, streaming: true, mode: activeMode },
     ]);
 
     abort.current = new AbortController();
     await streamChat(
-      { question, doc_id: docId, mode, images: images ? 3 : 0 },
+      { question, doc_id: docId, mode: activeMode, images: images ? 3 : 0 },
       {
         onSources: (sources) => patchLast((m) => ({ ...m, sources })),
         onToken: (t) => patchLast((m) => ({ ...m, text: m.text + t })),
@@ -146,13 +151,18 @@ export default function ChatPanel({ docId, docName, onCite }: Props) {
         </span>
         <div className="flex shrink-0 items-center gap-3 text-xs text-ink-soft">
           <select
-            value={mode}
+            value={activeMode}
             onChange={(e) => setMode(e.target.value as Mode)}
             className="rounded border border-rule bg-paper px-1 py-0.5 text-ink"
-            title="Retrieval mode"
+            title={hasGraph
+              ? "Retrieval mode. Graph: also follows connections between pages (for questions that join two facts)"
+              : "Retrieval mode (Graph needs a graph built for this document)"}
           >
             <option value="rerank">Rerank</option>
             <option value="hybrid">Hybrid</option>
+            <option value="graph+rerank" disabled={!hasGraph}>
+              Graph{hasGraph ? "" : " (not built)"}
+            </option>
           </select>
           <label className="flex items-center gap-1" title="Also send page images (charts, scans) to Gemini">
             <input type="checkbox" checked={images} onChange={(e) => setImages(e.target.checked)} className="accent-blueprint" />
@@ -309,6 +319,7 @@ function AssistantMessage({ m, docId, onCite, onAskAgain }: {
           {chunks.length > 0 && (
             <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="hover:text-ink">
               {open ? "Hide" : "Show"} {chunks.length} sources
+              {m.mode === "graph+rerank" && " · graph"}
               {m.timing && ` (${m.timing.total_s} s)`}
             </button>
           )}
@@ -339,7 +350,18 @@ function AssistantMessage({ m, docId, onCite, onAskAgain }: {
                   Page {s.pages.join(", ")}{s.type === "table" ? ", table" : ""}
                 </button>
                 {s.heading && <span className="text-ink-soft">: {s.heading}</span>}
+                {s.from_graph && (
+                  <span
+                    className="ml-1.5 rounded border border-blueprint/40 px-1 text-[10px] font-medium uppercase tracking-wide text-blueprint"
+                    title={s.graph_why ? `Found by following the graph: ${s.graph_why}` : "Found by following the graph"}
+                  >
+                    via graph
+                  </span>
+                )}
                 <p className="line-clamp-2 text-ink-faint">{s.text.replace(s.heading, "").trim()}</p>
+                {s.from_graph && s.graph_why && (
+                  <p className="mt-0.5 italic text-ink-faint">Linked: {s.graph_why}</p>
+                )}
               </li>
             ),
           )}

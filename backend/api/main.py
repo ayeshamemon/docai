@@ -181,6 +181,7 @@ def document_details(doc_id: str):
         "num_pages": meta["num_pages"],
         "status": worker.get_status(doc_id) or {"stage": "ready"},
         "has_file": find_pdf(doc_id) is not None,
+        "has_graph": (doc_dir(doc_id) / "graph" / "graph.json").exists(),   # GraphRAG available
         # bboxes are in PDF points with the origin top-left; the viewer scales them
         # by (rendered width / page width)
         "pages": [{"page": p["page"], "type": p["type"],
@@ -222,7 +223,7 @@ def document_status(doc_id: str):
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1)
     doc_id: str | None = None                  # None = search all documents
-    mode: Literal[tuple(TEXT_MODES)] = "rerank"
+    mode: Literal[tuple(TEXT_MODES + ["graph+rerank"])] = "rerank"   # graph+rerank = GraphRAG (Step 5)
     k: int = Field(TOP_K, ge=1, le=20)
     images: int = Field(DEFAULT_IMAGES, ge=0, le=5)
 
@@ -235,7 +236,9 @@ def source_view(h: dict) -> dict:
     return {"kind": "chunk", "doc_id": h["doc_id"], "chunk_id": h["chunk_id"],
             "type": h["type"], "heading": h["heading"], "pages": h["pages"],
             "boxes": h["boxes"],                       # for highlighting in the PDF
-            "text": h["text"][:600], "score": h["score"]}
+            "text": h["text"][:600], "score": h["score"],
+            "from_graph": bool(h.get("from_graph")),      # added by the graph walk (graph+rerank)
+            "graph_why": h.get("graph_why")}               # e.g. "P100 GPU -> big models: trained on"
 
 
 def sse(event: str, data) -> str:
@@ -251,6 +254,8 @@ def chat(req: ChatRequest):
         stage = doc_stage(req.doc_id, 1)
         if stage != "ready":
             raise HTTPException(409, f"document is not ready yet (stage: {stage})")
+        if req.mode == "graph+rerank" and not (PROCESSED / req.doc_id / "graph" / "graph.json").exists():
+            raise HTTPException(409, "this document has no graph yet (run graph.extract and graph.build)")
 
     def stream():
         t0 = time.time()

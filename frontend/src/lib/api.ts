@@ -101,6 +101,7 @@ export interface DocumentDetails {
   filename: string;
   num_pages: number;
   has_file: boolean;
+  has_graph?: boolean;   // GraphRAG built for this document
   pages: PageInfo[];
 }
 
@@ -119,7 +120,7 @@ export const pageImageUrl = (docId: string, page: number) => `${API}/documents/$
 
 // ---------- chat (Step 3.1 /chat, streamed as Server-Sent Events) ----------
 
-export type Mode = "rerank" | "hybrid" | "dense" | "bm25";
+export type Mode = "rerank" | "hybrid" | "dense" | "bm25" | "graph+rerank";
 
 export interface ChunkSource {
   kind: "chunk";
@@ -131,6 +132,8 @@ export interface ChunkSource {
   boxes: Box[];
   text: string;
   score: number;
+  from_graph?: boolean;      // added by the graph walk (Graph mode)
+  graph_why?: string | null; // why the graph brought it, e.g. "P100 GPU -> big models: trained on"
 }
 
 export interface PageSource {

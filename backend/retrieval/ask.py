@@ -184,7 +184,8 @@ if __name__ == "__main__":
     ap.add_argument("question")
     ap.add_argument("--doc", default=None)
     ap.add_argument("--k", type=int, default=TOP_K)
-    ap.add_argument("--mode", choices=TEXT_MODES, default="rerank", help="text retrieval mode")
+    ap.add_argument("--mode", choices=TEXT_MODES + ["graph", "graph-walk", "graph+rerank"], default="rerank",
+                    help="text retrieval mode")
     ap.add_argument("--images", type=int, default=DEFAULT_IMAGES,
                     help="max page images sent to Gemini (0 = text only)")
     ap.add_argument("--show-sources", action="store_true", help="print the retrieved chunks")

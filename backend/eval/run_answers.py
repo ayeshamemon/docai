@@ -40,7 +40,8 @@ from retrieval.ask import build_contents, generate, get_llm, retrieve
 
 HERE = Path(__file__).parent
 QUESTIONS = HERE / "questions.jsonl"
-ANSWERS = HERE / "answers.jsonl"
+ANSWERS = HERE / "answers.jsonl"   # rerank; other modes: answers_<mode>.jsonl
+MODE = "rerank"
 REVIEW = HERE / "human_review.jsonl"
 RESULTS_CSV = HERE / "results_answers.csv"
 
@@ -80,15 +81,16 @@ def load_questions() -> list[dict]:
     return [json.loads(l) for l in QUESTIONS.read_text().splitlines() if l.strip()]
 
 
-def load_results(path: Path = ANSWERS) -> dict[str, dict]:
+def load_results(path: Path | None = None) -> dict[str, dict]:
+    path = path or ANSWERS
     if not path.exists():
         return {}
     rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
     return {r["id"]: r for r in rows}           # later lines win (redo / rejudge)
 
 
-def save_result(row: dict, path: Path = ANSWERS):
-    with open(path, "a") as f:
+def save_result(row: dict, path: Path | None = None):
+    with open(path or ANSWERS, "a") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
@@ -151,7 +153,7 @@ def with_retries(fn, what: str, tries: int = 4):
 
 def answer_question(q: dict, client) -> dict:
     t0 = time.time()
-    hits, pages = retrieve(q["question"], q["doc"], client=client)     # same as the app
+    hits, pages = retrieve(q["question"], q["doc"], mode=MODE, client=client)   # same as the app
     t_retrieve = time.time() - t0
     text = "".join(generate(build_contents(q["question"], hits, pages)))
     return {
@@ -282,10 +284,15 @@ if __name__ == "__main__":
     ap.add_argument("--rejudge", action="store_true", help="judge existing answers again")
     ap.add_argument("--summary", action="store_true", help="only print the summary")
     ap.add_argument("--review", type=int, metavar="N", help="grade N random answers yourself")
+    ap.add_argument("--mode", default="rerank",
+                    help="retrieval mode, e.g. graph+rerank (results go to answers_<mode>.jsonl)")
     ap.add_argument("--answer-model", default=ANSWER_MODEL)
     ap.add_argument("--judge-model", default=JUDGE_MODEL)
     args = ap.parse_args()
 
+    if args.mode != "rerank":
+        MODE = args.mode
+        ANSWERS = HERE / f"answers_{args.mode.replace('+', '_').replace('-', '_')}.jsonl"
     if args.review:
         review(args.review)
         raise SystemExit

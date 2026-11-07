@@ -83,7 +83,8 @@ export default function Home() {
 
       <section className="min-h-0 min-w-0">
         {/* key: a new document starts a fresh chat */}
-        <ChatPanel key={docId ?? "none"} docId={docId} docName={doc?.filename} onCite={onCite} />
+        <ChatPanel key={docId ?? "none"} docId={docId} docName={doc?.filename} onCite={onCite}
+          hasGraph={!!details?.has_graph && details.doc_id === docId} />
       </section>
     </main>
   );

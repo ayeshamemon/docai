@@ -1,13 +1,28 @@
-id,category,question,rerank
-M01,multi-hop-bridge,"Which product category grew fastest in 2026, and what drove that growth?",0
-M02,multi-hop-bridge,"Which region had the fastest net sales growth in 2026, and why?",8
-M05,multi-hop-bridge,"By how much did Services net sales grow in 2026, and why did the Services gross margin increase?",9
-M08,multi-hop-bridge,"Which BERT model obtained a GLUE score of 80.5, and how many parameters does it have?",4
-M09,multi-hop-bridge,"How many layers does BERT-large have, and on what hardware and for how long was it pre-trained?",0
-M10,multi-hop-bridge,"What global growth does the IMF project for 2026, and what oil price is the forecast based on?",9
-M13,multi-hop-bridge,"Products gross margin rose partly due to tariff refunds. What was Products gross margin in 2026, and which ruling led to the refunds?",3
-M22,multi-hop-bridge,"Which reportable segment had the lowest net sales in 2026, and how did currency affect that segment?",6
-M23,multi-hop-bridge,"Which operating expense grew fastest in 2026, and what drove the increase?",3
-M24,multi-hop-bridge,"Which GPUs were used to train the Transformer, and what sustained TFLOPS value did the authors assume for that GPU when estimating training cost?",8
-M25,multi-hop-bridge,"What kind of positional encoding does the Transformer use, and what dev BLEU did the variant with learned positional embeddings get?",5
-M26,multi-hop-bridge,"BERT-base was sized to match which earlier model, and what GLUE average score did that model get?",5
+id,category,question,rerank,graph-walk,graph+rerank
+T2,synonym,How many employees does Apple have?,1,9,1
+T3,exact-term,What does Note 2 say about how revenue is recognized?,1,0,1
+T4,exact-term,What are the risk factors in Item 1A?,1,0,1
+T6,number,"Which year had total net sales of 391,035?",1,1,1
+T6b,number,"391,035",1,0,1
+T7,table,What were Services net sales in 2025?,2,1,2
+T13,table,What were Apple's total net sales in 2026?,1,9,1
+Q01,table,What were iPhone net sales in 2026?,1,4,1
+Q02,table,What were Mac net sales in 2025?,2,2,2
+Q03,table,How much did Apple make in Greater China in 2026?,3,3,3
+Q04,number,What was Apple's effective tax rate in 2026?,2,1,2
+Q05,number,How many shareholders of record did Apple have?,1,1,1
+Q06,synonym,How many people work at Apple?,1,3,1
+Q07,synonym,"Who audits Apple's financial statements, and since when?",2,2,2
+Q08,exact-term,What is AppleCare?,1,1,1
+Q09,prose,Why was Apple's effective tax rate higher in 2026 than in 2025?,1,0,1
+Q10,prose,Why did Greater China net sales increase in 2026?,1,4,1
+M01,multi-hop-bridge,"Which product category grew fastest in 2026, and what drove that growth?",0,0,9
+M02,multi-hop-bridge,"Which region had the fastest net sales growth in 2026, and why?",8,4,4
+M03,multi-hop-compare,What were Services net sales and the Services gross margin percentage in 2026?,4,7,6
+M04,multi-hop-compare,What were Apple's total net sales and total gross margin percentage in 2026?,2,0,2
+M05,multi-hop-bridge,"By how much did Services net sales grow in 2026, and why did the Services gross margin increase?",9,9,9
+M12,multi-hop-compare,"What was Apple's Products gross margin percentage in 2026, and what does Apple expect for memory and storage component costs?",3,0,3
+M13,multi-hop-bridge,"Products gross margin rose partly due to tariff refunds. What was Products gross margin in 2026, and which ruling led to the refunds?",3,0,3
+M14,multi-hop-compare,"What was Apple's R&D expense in 2026, and how many full-time equivalent employees did Apple have?",3,0,3
+M22,multi-hop-bridge,"Which reportable segment had the lowest net sales in 2026, and how did currency affect that segment?",6,0,8
+M23,multi-hop-bridge,"Which operating expense grew fastest in 2026, and what drove the increase?",3,0,3

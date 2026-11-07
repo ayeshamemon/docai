@@ -27,7 +27,7 @@ from ingest.index import COLLECTION, doc_filter, get_client, get_dense, get_spar
 RERANK_MODEL = "BAAI/bge-reranker-base"
 CANDIDATES = 20          # how many chunks each first-stage search hands on
 TEXT_MODES = ["dense", "bm25", "hybrid", "rerank"]
-MODES = TEXT_MODES + ["visual"]
+MODES = TEXT_MODES + ["visual", "graph", "graph-walk", "graph+rerank"]
 
 _reranker = None
 
@@ -104,8 +104,26 @@ def search_visual(query, client, k, doc_id=None):
              "heading": f"page image ({p.payload['reason']})", **p.payload} for p in pts]
 
 
+def search_graph(query, client, k, doc_id=None):
+    from graph.search import search_graph as fn          # imported here: graph.search imports this file
+    return fn(query, client, k, doc_id)
+
+
+def search_graph_walk(query, client, k, doc_id=None):
+    from graph.search import search_graph_walk as fn
+    return fn(query, client, k, doc_id)
+
+
+def search_graph_rerank(query, client, k, doc_id=None):
+    from graph.search import search_graph_rerank as fn
+    return fn(query, client, k, doc_id)
+
+
+GRAPH_MODES = ["graph", "graph-walk", "graph+rerank"]
 SEARCHERS = {"dense": search_dense, "bm25": search_bm25,
-             "hybrid": search_hybrid, "rerank": search_rerank, "visual": search_visual}
+             "hybrid": search_hybrid, "rerank": search_rerank, "visual": search_visual,
+             "graph": search_graph, "graph-walk": search_graph_walk,
+             "graph+rerank": search_graph_rerank}
 
 
 def search(query: str, client: QdrantClient | None = None, k: int = 5,

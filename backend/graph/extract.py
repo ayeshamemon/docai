@@ -31,8 +31,15 @@ from google.genai import errors, types
 from retrieval.ask import FALLBACK_MODEL, MODEL, get_llm
 
 EXTRACT_MODEL = os.environ.get("EXTRACT_MODEL", MODEL)
-MAX_RETRIES = 4
+MAX_RETRIES = 6
+_exhausted: set[str] = set()   # models that hit their daily limit in this run
 MIN_WORDS = 8                 # chunks shorter than this (page headers, stray labels) are skipped
+BIBLIOGRAPHY = ("references", "bibliography", "works cited")   # list of cited papers: only names, no facts
+
+
+def is_bibliography(chunk: dict) -> bool:
+    h = re.sub(r"^[\d.\s]+", "", (chunk.get("heading") or "").lower()).strip()
+    return h.startswith(BIBLIOGRAPHY)
 
 # Fixed, generic types: works for any PDF. Anything else becomes Concept.
 ENTITY_TYPES = ["Organization", "Person", "Product", "Place", "Date", "Metric", "Concept", "Event"]
@@ -130,8 +137,10 @@ def call_gemini(prompt: str) -> dict:
     """One JSON call with retries on busy / rate-limit errors, then the fallback model."""
     config = types.GenerateContentConfig(temperature=0.0, response_mime_type="application/json")
     models = [EXTRACT_MODEL] + ([FALLBACK_MODEL] if FALLBACK_MODEL and FALLBACK_MODEL != EXTRACT_MODEL else [])
+    models = [m for m in models if m not in _exhausted] or models
     last = None
     for model in models:
+        limited = 0
         for attempt in range(MAX_RETRIES):
             try:
                 resp = get_llm().models.generate_content(model=model, contents=prompt, config=config)
@@ -140,10 +149,19 @@ def call_gemini(prompt: str) -> dict:
                 last = e
             except (errors.ServerError, errors.ClientError, httpx.TimeoutException) as e:
                 code = "timeout" if isinstance(e, httpx.TimeoutException) else getattr(e, "code", None)
+                if code == 402:                   # credits used up: retrying will not help
+                    raise SystemExit("[stopped] Gemini credits are used up (402). Everything done so far "
+                                     "is saved; add credits or switch API key, then run the same command.")
                 if code not in (429, 500, 503, 504, "timeout"):
                     raise
                 last = e
-                wait = 2 ** attempt * 5           # 5, 10, 20, 40 s (free tier limits per minute)
+                # 429 = per-minute limit (free tier): wait for the minute to reset
+                limited = limited + 1 if code == 429 else 0
+                if limited >= 3:                  # still limited after 3 minutes: daily limit reached
+                    _exhausted.add(model)
+                    print(f"    [{model}: daily limit reached, using the next model for the rest of this run]", flush=True)
+                    break
+                wait = 65 if code == 429 else min(2 ** attempt * 5, 60)
                 print(f"    [{model} busy ({code}), retrying in {wait}s]", flush=True)
                 time.sleep(wait)
     raise RuntimeError(f"extraction failed: {last}")
@@ -179,7 +197,8 @@ def extract_document(doc_dir: Path, limit: int | None = None, redo: bool = False
     if redo and path.exists():
         path.unlink()
     done = load_done(path)
-    todo = [c for c in chunks if c["chunk_id"] not in done and len(c["text"].split()) >= MIN_WORDS]
+    todo = [c for c in chunks if c["chunk_id"] not in done and len(c["text"].split()) >= MIN_WORDS
+            and not is_bibliography(c)]
     if limit:
         todo = todo[:limit]
     print(f"[extract] {doc_dir.name}: {len(chunks)} chunks, {len(done)} done, {len(todo)} to do "
