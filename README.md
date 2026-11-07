@@ -8,7 +8,9 @@ scans and handwritten notes. Every answer cites its pages. Clicking a citation o
 and highlights the passage the answer came from.
 
 On a 55-question test set over 6 documents: **96% of answers correct, 0% wrong, 100% of
-citations grounded** in the sources the model was given.
+citations grounded** in the sources the model was given. A **GraphRAG mode** follows connections
+between pages for questions that join two facts: on the hardest multi-hop questions it raised
+correct answers from **50% to 67%**, with no loss on single-fact questions.
 
 ---
 
@@ -63,6 +65,33 @@ flowchart LR
 5. **Answer** ([`backend/retrieval/ask.py`](backend/retrieval/ask.py)): Gemini Flash answers
    only from the sources, cites pages, and says when the answer is not in the document.
 
+### GraphRAG mode
+
+Some questions need two facts from different pages, and the second one does not sound like the
+question. *"Which GPUs trained the Transformer, and what TFLOPS value was assumed for that GPU?"*:
+the answer to the second half is a footnote on another page that never mentions training, so
+normal search misses it.
+
+GraphRAG builds a **map of each document** ([`backend/graph/`](backend/graph/)):
+
+1. **Extract** (`extract.py`): Gemini reads every chunk and lists its entities (8 fixed types)
+   and the relationships the text states. Every relationship must come with an exact quote, and
+   the code drops any whose quote is not really in the chunk (98–100% were kept).
+2. **Merge** (`build.py`): the same thing named differently in different chunks
+   ("NVIDIA P100 GPU", "P100") becomes one node. Exact names merge automatically; similar names
+   are only candidates that Gemini confirms or rejects, and a guard stops two things Gemini called
+   different from being chained together.
+3. **Connect:** besides the stated relationships, structural edges from the layout link each
+   entity to its chunks and each chunk to its section and the next chunk, so the whole document
+   becomes one connected map.
+4. **Search** (`search.py`, mode `graph+rerank`): normal search keeps its best 3 chunks; the graph
+   walks one step from the entities in those chunks and in the question, and adds the 2 most
+   strongly connected chunks. Still 5 chunks in total, so the comparison with normal search is
+   fair.
+
+In the app, choose **Graph** in the chat; sources found through the graph are tagged *via graph*
+with the connection that brought them.
+
 **App:** a FastAPI backend ([`backend/api/`](backend/api/)) with background processing for
 uploads, live status and streamed answers (Server-Sent Events), and a Next.js frontend
 ([`frontend/`](frontend/)) with a PDF viewer, streamed chat and clickable citations that
@@ -92,8 +121,8 @@ equivalent", rank 6). Hybrid search misses neither.
 ### Answers: is the final answer right?
 
 Same pipeline as the app (rerank, top 5 chunks, up to 3 page images). Answers by
-`gemini-3.6-flash`; judged by a **different** model (`gemini-3.8-flash`) against reference
-answers; 15 random verdicts checked by hand (15/15 agreement).
+`gemini-3.6-flash`; judged by a **different** model (`gemini-3.8-flash`) against a hand-written
+answer key; 15 random verdicts checked by hand (15/15 agreement).
 
 | | |
 |---|---|
@@ -107,6 +136,22 @@ answers; 15 random verdicts checked by hand (15/15 agreement).
 
 Faded and clean scans were 100% correct. The only weakness is reading **exact values** from
 charts: the right series and timing, but peak values overestimated.
+
+### GraphRAG: multi-hop questions
+
+26 more questions need two facts from two places. **Bridge** questions (12) need fact 1 to know
+what fact 2 is ("Which segment had the lowest sales, and how did currency affect it?");
+**compare** questions (14) name both facts.
+
+| Correct answers | Normal search (rerank) | **GraphRAG (graph+rerank)** |
+|---|---|---|
+| Bridge (12) | 50% | **67%** |
+| Compare (14) | 86% | **93%** |
+| Single-fact (55) | 96% | **96%** |
+| Wrong answers | 0% | **0%** |
+
+Retrieval (all facts in the top 5) went from 85% to 89% over all 81 questions. GraphRAG fixed 5
+questions and lost 2, both because the 2 graph slots pushed out a useful chunk.
 
 Full logs of every experiment, including failures, are in [`NOTES.md`](NOTES.md).
 
@@ -131,6 +176,13 @@ Full logs of every experiment, including failures, are in [`NOTES.md`](NOTES.md)
   async-iterable there, fixed with a polyfill); the viewer kept jumping back to page 1 because
   pages that were still loading suspended the nearest React Suspense boundary, which hid and
   remounted the whole viewer (fixed with a boundary per page plus `startTransition`).
+- **The reranker was the wrong judge for the graph.** On the GPU question both facts were in the
+  graph's candidates, but the reranker scored them lowest and picked other chunks: it asks
+  "does this chunk answer the whole question?", and the second fact alone never does. Picking the
+  graph chunks by how strongly they are connected instead raised the first test from 57% to 86%.
+- **Graph-only search was worse than normal search.** It lost single-fact questions, especially
+  on the 10-K, where entities like "net sales" connect to everything. The graph works best as a
+  helper on top of normal search.
 - **On a MacBook Air,** ColQwen2.5 (3B) and ColSmol both crashed while loading their adapter
   onto the Apple GPU in bfloat16; loading in float32 on the CPU first and then moving to the
   GPU fixed it. ColSmol-256M indexes about 3–7 seconds per page.
@@ -182,6 +234,19 @@ python -m eval.run_retrieval       # retrieval evaluation, all modes
 python -m eval.run_answers         # answer evaluation with an LLM judge
 ```
 
+### GraphRAG (optional)
+
+Building a graph costs one Gemini call per chunk (the 123-page 10-K: 418 calls, about an hour),
+so it is a separate step, run per document from `backend/` with the server stopped:
+
+```bash
+python -m graph.extract data/processed/<doc_id>          # entities + relationships (resumable)
+python -m graph.build data/processed/<doc_id>            # merge + connect
+python -m graph.index_entities add data/processed/<doc_id>
+```
+
+Then **Graph** becomes available in the chat for that document.
+
 ---
 
 ## Limitations
@@ -194,20 +259,23 @@ python -m eval.run_answers         # answer evaluation with an LLM judge
   spot-check agreed on all 15 sampled verdicts, all of which were "correct" ones.
 - **Chart answers vary between runs** (a chart question moved from partial to correct between
   two runs).
+- **GraphRAG:** only 12 bridge questions, so its gain is a direction rather than proof; the fixed
+  3 + 2 split can push out a useful chunk; the graph weights are reasonable guesses, not tuned;
+  graphs are built from the command line, not on upload; answers take a few seconds longer.
 - **Local Qdrant** allows one process at a time; a production setup would run Qdrant as a
   service.
 
 ## Next steps
 
-- **GraphRAG mode** for multi-hop questions across pages and documents
 - **Agentic RAG mode:** an agent that plans, chooses between hybrid, visual and graph search,
   calculates and verifies
-- Multi-hop and vaguer questions in the test set, and several runs per question
+- A "Build graph" button in the app, and graphs across several documents
+- Vaguer questions in the test set, and several runs per question
 
 ## Tech stack
 
 Docling, RapidOCR, PyMuPDF, fastembed (bge-small-en-v1.5, BM25, bge-reranker-base),
-ColSmol-256M (colpali-engine), Qdrant, Gemini Flash, FastAPI, Next.js, React, react-pdf,
+ColSmol-256M (colpali-engine), Qdrant, NetworkX, Gemini Flash, FastAPI, Next.js, React, react-pdf,
 Tailwind CSS
 
 ---
