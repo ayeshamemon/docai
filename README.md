@@ -137,8 +137,6 @@ always sends for scanned documents but the agent did not choose to look at.
 - **Graph** reaches with 5 chunks what normal search needs 7 for; graph-only search was worse than
   normal search, so the graph works as a helper.
 
-Every experiment, finding and failure is in [`NOTES.md`](NOTES.md).
-
 ---
 
 ## What I learned building it
