@@ -14,6 +14,10 @@ How the walk scores a chunk (higher = more likely useful):
   next chunk in the same section (STRUCTURAL) ..... seed score x 0.5
 Only 1 hop: the document is one connected map, so long walks reach everything.
 Page edges are not walked (a page holds unrelated chunks); they stay in the graph for the UI.
+Date entities ("2026", "Fourth Quarter 2026") are hubs that touch almost every chunk: they are
+never starting points and the walk does not hop through them.
+An entity in many chunks gives at most 6, chosen by how relevant each chunk is to the question
+(hybrid search rank), not by chunk order.
 
 Usage (run from backend/, API server stopped):
     python -m graph.search "Which GPUs were used, and what TFLOPS was assumed for them?" --doc bdfaa68d8984f0dc
@@ -36,6 +40,9 @@ MAX_CHUNKS_PER_ENTITY = 6    # hub entities ("Apple", "Transformer") are in doze
 GRAPH_POOL = 20              # chunks handed to the reranker
 GRAPH_SLOTS = 2              # graph+rerank: slots reserved for graph chunks in the top k
 STATED_W, NEXT_W = 0.8, 0.5
+CHUNK_SEED_SCORE = 0.7       # starting score for entities found inside the top rerank chunks
+RELEVANCE_DEPTH = 40         # hybrid search depth used to order a hub entity's chunks
+HUB_TYPES = {"Date"}         # never starting points, never walked through
 
 _cache = {}
 
@@ -52,19 +59,37 @@ def load(doc_id: str):
     return _cache[doc_id][1:]
 
 
-def walk(g, seeds: dict[str, float]) -> tuple[dict, dict]:
+def chunk_order(cid: str) -> int:
+    try:
+        return int(cid.rsplit("_c", 1)[1])
+    except (IndexError, ValueError):
+        return 10**6
+
+
+def relevance_ranks(query, client, doc_id) -> dict[str, int]:
+    """chunk id -> rank in hybrid search (1 = most relevant). Used to pick a hub's chunks."""
+    from retrieval.search import search_hybrid
+    hits = search_hybrid(query, client, RELEVANCE_DEPTH, doc_id)
+    return {h["chunk_id"]: i for i, h in enumerate(hits, 1)}
+
+
+def walk(g, seeds: dict[str, float], ranks: dict[str, int] | None = None) -> tuple[dict, dict]:
     """seeds: entity id -> score. Returns chunk id -> score, and chunk id -> why (for --explain)."""
     score, why = defaultdict(float), {}
+    ranks = ranks or {}
 
     def give(cid, s, reason):
         if cid in g and g.nodes[cid].get("node") == "chunk" and s > score[cid]:
             score[cid], why[cid] = s, reason
 
     def entity_chunks(eid):
-        return g.nodes[eid].get("chunk_ids", [])[:MAX_CHUNKS_PER_ENTITY]
+        ids = g.nodes[eid].get("chunk_ids", [])
+        # most relevant to the question first; chunks not in the search results keep reading order
+        ids = sorted(ids, key=lambda c: (ranks.get(c, 10**6), chunk_order(c)))
+        return ids[:MAX_CHUNKS_PER_ENTITY]
 
     for eid, s in seeds.items():
-        if eid not in g:
+        if eid not in g or g.nodes[eid].get("type") in HUB_TYPES:
             continue
         name = g.nodes[eid]["name"]
         for cid in entity_chunks(eid):                                   # 0 hops
@@ -74,7 +99,8 @@ def walk(g, seeds: dict[str, float]) -> tuple[dict, dict]:
                     give(nxt, s * NEXT_W, f"next to a chunk mentioning {name}")
         for other in set(g.successors(eid)) | set(g.predecessors(eid)):  # 1 hop, stated edges
             e = g.edges.get((eid, other)) or g.edges.get((other, eid))
-            if not e or e.get("kind") != "stated" or g.nodes[other].get("node") != "entity":
+            if (not e or e.get("kind") != "stated" or g.nodes[other].get("node") != "entity"
+                    or g.nodes[other].get("type") in HUB_TYPES):
                 continue
             w = s * STATED_W * e.get("strength", 5) / 10
             for cid in entity_chunks(other):
@@ -92,21 +118,28 @@ def rerank_chunks(query: str, chunks: list[dict]) -> list[dict]:
 
 
 def seeds_from_question(query, client, doc_id):
-    return {h["entity_id"]: h["score"] for h in search_entities(query, client, doc_id, SEED_ENTITIES)}
+    """The entities closest to the question by meaning (Date entities skipped: hubs)."""
+    hits = search_entities(query, client, doc_id, SEED_ENTITIES * 2)
+    hits = [h for h in hits if h.get("type") not in HUB_TYPES][:SEED_ENTITIES]
+    return {h["entity_id"]: h["score"] for h in hits}
 
 
-def graph_pool(query, client, doc_id, seed_chunk_ids=(), explain=False):
+def graph_pool(query, client, doc_id, seed_chunk_ids=()):
+    """Returns the pool (chunks with walk score and reason) and the seeds:
+    entity id -> (score, where it came from)."""
     loaded = load(doc_id)
     if not loaded:
         return [], {}
     g, chunks = loaded
-    seeds = seeds_from_question(query, client, doc_id)
+    seeds = {eid: (s, "question") for eid, s in seeds_from_question(query, client, doc_id).items()}
     for cid in seed_chunk_ids:                    # entities of the chunks search already found
         if cid in g:
             for eid in g.predecessors(cid):
-                if g.nodes[eid].get("node") == "entity":
-                    seeds[eid] = max(seeds.get(eid, 0), 0.7)
-    score, why = walk(g, seeds)
+                node = g.nodes[eid]
+                if node.get("node") == "entity" and node.get("type") not in HUB_TYPES:
+                    if seeds.get(eid, (0, ""))[0] < CHUNK_SEED_SCORE:
+                        seeds[eid] = (CHUNK_SEED_SCORE, f"in top chunk {cid.rsplit('_', 1)[-1]}")
+    score, why = walk(g, {e: s for e, (s, _) in seeds.items()}, relevance_ranks(query, client, doc_id))
     best = sorted(score, key=score.get, reverse=True)[:GRAPH_POOL]
     pool = [{**chunks[c], "graph_score": round(score[c], 3), "graph_why": why[c]}
             for c in best if c in chunks]
@@ -160,11 +193,20 @@ if __name__ == "__main__":
 
     client = get_client()
     if args.explain:
-        pool, seeds = graph_pool(args.query, client, args.doc)
+        seed_chunks = []
+        if args.mode == "graph+rerank":           # same starting points as the real mode
+            from retrieval.search import CANDIDATES, search_rerank
+            base = search_rerank(args.query, client, CANDIDATES, args.doc)
+            seed_chunks = [h["chunk_id"] for h in base[:SEED_CHUNKS]]
+            print("TOP 3 RERANK CHUNKS (their entities are starting points)")
+            for cid in seed_chunks:
+                print(f"  {cid.rsplit('_', 1)[-1]}")
+            print()
+        pool, seeds = graph_pool(args.query, client, args.doc, seed_chunks)
         g, _ = load(args.doc)
-        print("SEED ENTITIES")
-        for eid, s in sorted(seeds.items(), key=lambda x: -x[1]):
-            print(f"  {s:.3f}  {g.nodes[eid]['name']}")
+        print("SEED ENTITIES (score, from)")
+        for eid, (s, src) in sorted(seeds.items(), key=lambda x: -x[1][0]):
+            print(f"  {s:.3f}  {g.nodes[eid]['name']:<40} {src}")
         print("\nGRAPH POOL (before reranking)")
         for c in pool:
             print(f"  {c['graph_score']:.3f}  {c['chunk_id']:<24} p.{c['pages']}  {c['graph_why'][:90]}")

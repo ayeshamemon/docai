@@ -150,8 +150,8 @@ what fact 2 is ("Which segment had the lowest sales, and how did currency affect
 | Single-fact (55) | 96% | **96%** |
 | Wrong answers | 0% | **0%** |
 
-Retrieval (all facts in the top 5) went from 85% to 89% over all 81 questions. GraphRAG fixed 5
-questions and lost 2, both because the 2 graph slots pushed out a useful chunk.
+Retrieval (all facts in the top 5) went from 85% to 90% over all 81 questions (bridge: 42% to
+58%). GraphRAG fixed 6 questions and lost 1, because the 2 graph slots pushed out a useful chunk.
 
 Full logs of every experiment, including failures, are in [`NOTES.md`](NOTES.md).
 

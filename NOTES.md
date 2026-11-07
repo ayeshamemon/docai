@@ -149,6 +149,10 @@ Structural edges join every document into one connected map (IMF: 251 pieces →
 
 Why 1 step only: the map is fully connected, so longer walks reach everything. Why pick by walk score: see challenge 9.
 
+Two more rules (added after checking M01 with `--explain`, challenge 17):
+- **Date entities are hubs** ("2026" touches almost every chunk of a 10-K): never starting points, never walked through.
+- **A hub entity's 6 chunks are chosen by relevance** to the question (hybrid search rank), not by chunk order.
+
 **8f. In the app:** "Graph" in the mode menu (disabled for documents without a graph); sources found by the graph get a **via graph** tag and the connection that brought them ("P100 GPU → big models: trained on").
 
 ---
@@ -183,8 +187,8 @@ Why 1 step only: the map is fully connected, so longer walks reach everything. W
 |---|---|---|---|---|
 | Single-fact | 55 | 96% | lower (drops several) | **98%** |
 | Compare | 14 | 79% | 57% | **86%** |
-| Bridge | 12 | 42% | 33% | **50%** |
-| All | 81 | 85% | – | **89%** |
+| Bridge | 12 | 42% | 33% | **58%** |
+| All | 81 | 85% | – | **90%** |
 
 **Answers (same answer and judge models):**
 | | rerank | **graph+rerank** |
@@ -194,8 +198,8 @@ Why 1 step only: the map is fully connected, so longer walks reach everything. W
 | Single-fact (55) | 96% | **96%** |
 | Wrong | 0% | **0%** |
 
-- Newly correct: M02 (Greater China sales + currency effect), M06, M20, M24 (P100 + TFLOPS footnote), Q12 (failed in every mode since the start).
-- Lost: M03 (see limitations: slot displacement).
+- Newly correct answers: M02 (Greater China sales + currency effect), M06, M20, M24 (P100 + TFLOPS footnote), Q12 (failed in every mode since the start).
+- Retrieval after the graph fixes (challenge 17): gained 6 questions, lost 1 (M03, see limitations: slot displacement).
 - Still not fully answered: M01 (why iPhone grew), M05, M09, M22.
 - `graph-walk` (graph only, ordered by walk score) and pure `graph` (graph only, reranked) are comparisons: both are weaker than normal search alone; the graph works as a **helper**, not a replacement.
 
@@ -225,6 +229,7 @@ Why 1 step only: the map is fully connected, so longer walks reach everything. W
     - Scroll jank → update state once per animation frame.
 15. **Model crashes on a Mac.** ColQwen2.5 and ColSmol segfaulted loading their adapter onto the Apple GPU in bfloat16 → load in float32 on CPU, then move to the GPU.
 16. **Slow, overloaded LLM.** 184 s for one answer with an overloaded model → switched main/fallback models, 90 s timeout, retries: ~7–11 s.
+17. **The graph found a right answer for the wrong reason.** On M01 ("Which product grew fastest, and why?") `--explain` showed the starting entities were dates ("2026", "Fourth Quarter 2026"), and the reason chunk entered only because it mentions "2026", like a dozen unrelated chunks (stock buybacks, taxes). Two bugs behind it: dates acted as hubs, and an entity in many chunks kept its first 6 chunks by **text order of the ids** (c1, c10, c11, c12, c2… effectively random). `--explain` also hid the starting points that come from the top rerank chunks. → Dates excluded as starting points and hops; a hub's chunks ordered by relevance; `--explain` shows every starting point and its source. Graph eval re-run after the fix.
 
 ---
 
@@ -234,7 +239,7 @@ Why 1 step only: the map is fully connected, so longer walks reach everything. W
 - **Judge from the same model family** as the answerer (human check 15/15, all on "correct" verdicts).
 - **Chart values are approximate** (peaks tend to be overestimated).
 - **GraphRAG:**
-  - **Slot displacement:** the fixed 3 + 2 split pushes out rerank's #4–#5; this lost 2 questions (M03, M26) while gaining 5. A 4 + 1 split or a walk-score threshold could help, but tuning on the same 81 questions would overfit.
+  - **Slot displacement:** the fixed 3 + 2 split pushes out rerank's #4–#5; before the graph fixes this lost 2 questions (M03, M26) while gaining 5; after them, 1 lost (M03) and 6 gained. A 4 + 1 split or a walk-score threshold could help, but tuning on the same 81 questions would overfit.
   - **Untuned weights:** 0.8 (stated edge), 0.5 (next chunk) and the 0.88 merge threshold are reasonable guesses.
   - **Strength is subjective:** Gemini's 1–10 is uncalibrated (mostly 7–9), so it only adjusts scores slightly.
   - **Hub entities** ("Apple", "net sales") connect to dozens of chunks; capped at 6 chunks per entity.
@@ -254,3 +259,83 @@ Why 1 step only: the map is fully connected, so longer walks reach everything. W
 - **Evidence quotes checked in code:** every graph edge can be traced to an exact sentence in the PDF.
 - **Graph as a helper (graph+rerank), not a replacement:** graph-only modes lost single-fact questions; the hybrid design keeps normal search and only adds connected chunks.
 - **Fixed chunk budget (5) for every mode:** a fair comparison; gains come from better chunks, not more chunks.
+
+---
+
+## Step 9: Agentic RAG (in progress)
+
+**Idea:** today's modes search once and answer. An agent works like a researcher: it plans, searches, reads, notices what is missing, writes a better search itself, checks, and only then answers. Example (M01, unsolved by every mode): search "net sales by product" → iPhone grew most → *new* search "why did iPhone net sales increase" → "higher net sales of Pro models". Normal search cannot ask the second question because it does not know the answer is iPhone until it reads the table.
+
+**Plan:** 9.1 tools → 9.2 the loop (Gemini picks one tool per round, JSON) → 9.3 stopping rules → 9.4 answer + self-check → 9.5 eval on the same 81 questions (correct / wrong / steps / time) → 9.6 "Agent" mode in the app with live steps. Plain Python loop, no agent framework (every line explainable, easy to log).
+
+**Stopping rules (planned):** split the question into parts first and answer only when every part has a source; at most 5 rounds, then answer with what was found and say what is missing; the same search twice is blocked; nothing found → "not in the document".
+
+### Worked example: M01 in every mode (why an agent is needed)
+
+**Question (M01, bridge):** "Which product grew fastest in 2026, and why?" Two parts:
+- part 1 (which product): the net sales table, chunk **c111**, p. 29: iPhone +21%
+- part 2 (why): chunk **c112**, p. 29: "iPhone net sales increased … due to higher net sales of Pro models"
+
+The two chunks sit **next to each other** in the PDF. Every mode failed this question in the eval.
+
+**Experiment 1: the same three queries in both tools** (does c111 / c112 reach the top 5?)
+
+| Query | text_search (normal) | graph_search (GraphRAG) |
+|---|---|---|
+| "Which product grew fastest in 2026, and why?" (the full question) | ❌ table ❌ reason | ❌ table ✅ reason |
+| "net sales by product 2026" | ✅ table ❌ reason | ✅ table ❌ reason |
+| "why did iPhone net sales increase in 2026" | ❌ table ✅ reason | ❌ table ✅ reason |
+
+**What it shows:**
+- **No single query finds both parts, with either tool.**
+- **The query matters more than the tool:** on the last two queries both tools return the same two chunks.
+- **Why normal search misses the reason:** the question never says "iPhone" (that is what is asked). The document has six near-identical paragraphs ("Mac / Americas / Greater China / iPhone net sales increased … due to …"); without knowing it is the iPhone, the right one cannot be told apart.
+- **Why the full question misses the table:** "grew" and "why" match explanation paragraphs; a table of pipes and numbers scores low against such words.
+- **Once "iPhone" is in the query, plain search finds the reason at once:** the hard part is not searching, it is *knowing what to ask*, and that needs part 1 first.
+
+**Experiment 2: why did GraphRAG find the reason?** (`graph.search --explain`)
+- *First look:* the starting entities found by meaning were dates ("2026", "Fourth Quarter 2026") and c112 entered the pool only because it mentions "2026", like a dozen unrelated chunks (buybacks, taxes, inventories). **A right answer for the wrong reason.**
+- *Bugs found:* (1) dates act as hubs (a 10-K mentions 2026 everywhere); (2) a hub's 6 chunks were picked by **text order of chunk ids** (c1, c10, c11, c12, c2, …: effectively random); (3) `--explain` hid the starting points that come from the top rerank chunks.
+- *Fixes:* dates are never starting points or hops; a hub's chunks are ordered by hybrid-search relevance; `--explain` shows every starting point and its source.
+- *After the fixes:* iPhone becomes a starting point (from a regional paragraph that mentions it); **both** the table and the reason are now in the graph pool. But the top 3 rerank chunks give **16 starting entities, all with score 0.7** (laptops, Mac, Services, U.S. dollar, renminbi, …), so **all 20 pool chunks tie at 0.700** and the reranker breaks the tie: it picked "Foreign Exchange Rate Risk" (useless) and c112, and the table lost (tables score low with the reranker).
+- *Open problem:* the graph now reaches both halves but cannot tell which are important: "U.S. dollar" from a regional paragraph counts as much as "iPhone". Candidate fix: starting scores by the source chunk's rank and by how specific an entity is (an entity in 3 chunks says more than one in 40). Decided to measure the three fixes on all 81 questions first, instead of tuning on one question (overfitting).
+
+**Experiment 3: the three fixes on all 81 questions (retrieval, hit@5):**
+
+| | rerank | graph+rerank before fixes | **graph+rerank after fixes** |
+|---|---|---|---|
+| Single-fact (55) | 96% | 98% | **98%** |
+| Compare (14) | 79% | 86% | **86%** |
+| Bridge (12) | 42% | 50% | **58%** |
+| All (81) | 85% | 89% | **90%** |
+
+- **M26 recovered** (rank 6 → 5): BERT-base sized like OpenAI GPT → GPT's GLUE score. No question got worse.
+- Now graph+rerank vs rerank: **gained 6** (Q12, M02, M06, M20, M24, M26), **lost 1** (M03, slot displacement).
+- M01 still missed (rank 10): the tie problem from experiment 2 is real, but fixing it was postponed (only one question clearly needs it; risk of overfitting).
+
+**What an agent does instead (the plan):** two focused searches in order:
+1. "net sales by product 2026" → table → "it's the iPhone, +21%"
+2. "why did iPhone net sales increase" (written *after* step 1) → c112 → "Pro models"
+
+Or simply `read_next(c111)` → c112, because the reason is the next chunk. This is what no single query, and no single retrieval mode, can do.
+
+**Lessons:**
+- One query cannot serve a question whose parts need different words (a table for "which", a paragraph for "why").
+- A bridge question's second query depends on the first answer; only something that reads and then searches again can write it.
+- Inspect *why* a result was found, not only *whether*: the first GraphRAG "success" on M01 was luck, and checking it found two real bugs.
+
+### 9.1 Tools (`backend/agent/tools.py`)
+Started with 6 tools; more (read a whole page, read a full split table, document outline, graph entity lookup, look at one page image) only if the logs show they are needed: too many similar tools make agents pick worse.
+
+| Tool | Uses | For |
+|---|---|---|
+| `text_search(query)` | hybrid + reranker, top 5 | most questions |
+| `graph_search(query)` | graph+rerank | a fact linked to something already found |
+| `visual_search(query)` | page images, top 2 | charts, scans (images go to Gemini with the final answer) |
+| `read_next(chunk)` | chunk before and after, from chunks.json | an explanation right under a table (M22, M05) |
+| `find_exact(term)` | every chunk with the exact word / number | exact terms and numbers (like "h = 8") |
+| `calculate(expression)` | safe arithmetic (parsed, no eval) | growth, differences, totals |
+
+- Each tool returns what the agent reads (chunks with short ids like `c23` and pages) plus the chunks themselves, kept for the final answer and its citations.
+- A tool error is returned to the agent as text, never a crash.
+- **Calculator safety:** only numbers, + − × ÷ ** %, brackets and round / abs / min / max; anything else (e.g. `__import__`) is refused. Thousands separators are removed only between digits ("254,098" → 254098) so `round(x, 1)` still works (a bug found in testing).
