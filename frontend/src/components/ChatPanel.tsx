@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { Box, Mode, Source, Timing, pageImageUrl, streamChat } from "@/lib/api";
+import { AgentStep, Box, Mode, Source, Timing, pageImageUrl, streamChat } from "@/lib/api";
 
 interface Message {
   role: "user" | "assistant";
@@ -15,6 +15,7 @@ interface Message {
   error?: string;
   streaming?: boolean;
   mode?: Mode;                // assistant: the retrieval mode used
+  steps?: AgentStep[];        // assistant, Agent mode: what the agent did, round by round
 }
 
 /** Called when a citation or a source is clicked: jump to `page` and highlight `boxes`. */
@@ -118,6 +119,7 @@ export default function ChatPanel({ docId, docName, onCite, hasGraph = false }: 
       { question, doc_id: docId, mode: activeMode, images: images ? 3 : 0 },
       {
         onSources: (sources) => patchLast((m) => ({ ...m, sources })),
+        onStep: (step) => patchLast((m) => ({ ...m, steps: [...(m.steps ?? []), step] })),
         onToken: (t) => patchLast((m) => ({ ...m, text: m.text + t })),
         onDone: (timing) => patchLast((m) => ({ ...m, timing })),
         onError: (error) => patchLast((m) => ({ ...m, error })),
@@ -155,7 +157,7 @@ export default function ChatPanel({ docId, docName, onCite, hasGraph = false }: 
             onChange={(e) => setMode(e.target.value as Mode)}
             className="rounded border border-rule bg-paper px-1 py-0.5 text-ink"
             title={hasGraph
-              ? "Retrieval mode. Graph: also follows connections between pages (for questions that join two facts)"
+              ? "Retrieval mode. Graph: also follows connections between pages. Agent: plans, searches several times and checks before answering (slower)"
               : "Retrieval mode (Graph needs a graph built for this document)"}
           >
             <option value="rerank">Rerank</option>
@@ -163,6 +165,7 @@ export default function ChatPanel({ docId, docName, onCite, hasGraph = false }: 
             <option value="graph+rerank" disabled={!hasGraph}>
               Graph{hasGraph ? "" : " (not built)"}
             </option>
+            <option value="agent">Agent</option>
           </select>
           <label className="flex items-center gap-1" title="Also send page images (charts, scans) to Gemini">
             <input type="checkbox" checked={images} onChange={(e) => setImages(e.target.checked)} className="accent-blueprint" />
@@ -257,7 +260,11 @@ function AssistantMessage({ m, docId, onCite, onAskAgain }: {
 
   return (
     <div className="text-sm text-ink">
-      {m.streaming && !m.error && (
+      {m.mode === "agent" && (m.steps?.length || m.streaming) ? (
+        <AgentSteps steps={m.steps ?? []} working={!!m.streaming && !m.text && !m.error} />
+      ) : null}
+
+      {m.streaming && !m.error && m.mode !== "agent" && (
         <Steps phase={phase} chunks={chunks.length} pages={pages.length} />
       )}
 
@@ -320,6 +327,7 @@ function AssistantMessage({ m, docId, onCite, onAskAgain }: {
             <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="hover:text-ink">
               {open ? "Hide" : "Show"} {chunks.length} sources
               {m.mode === "graph+rerank" && " · graph"}
+              {m.mode === "agent" && m.steps && ` · agent, ${m.steps.length} steps`}
               {m.timing && ` (${m.timing.total_s} s)`}
             </button>
           )}
@@ -368,6 +376,45 @@ function AssistantMessage({ m, docId, onCite, onAskAgain }: {
         </ul>
       )}
     </div>
+  );
+}
+
+const TOOL_LABEL: Record<string, string> = {
+  text_search: "Searched",
+  graph_search: "Searched the graph for",
+  visual_search: "Looked at page images for",
+  read_next: "Read around passage",
+  find_exact: "Looked for the exact text",
+  calculate: "Calculated",
+  answer: "Has every part: writing the answer",
+};
+
+/** Agent mode: what the agent did, round by round (live while it works, kept afterwards). */
+function AgentSteps({ steps, working }: { steps: AgentStep[]; working: boolean }) {
+  return (
+    <ol className="mb-3 space-y-2 border-l-2 border-blueprint/40 pl-3 text-xs" aria-live="polite">
+      {steps.map((s) => (
+        <li key={s.round}>
+          <div className="text-ink">
+            <span className="font-medium">{s.round}. {TOOL_LABEL[s.tool] ?? s.tool}</span>
+            {s.tool !== "answer" && s.arg && <span className="text-ink-soft"> “{s.arg}”</span>}
+            {s.tool !== "answer" && !s.note && (
+              <span className="text-ink-faint">
+                {" · "}{s.pages.length ? `${s.pages.length} page images` : `${s.chunks} passages`}
+              </span>
+            )}
+          </div>
+          {s.thought && <p className="italic text-ink-faint">{s.thought}</p>}
+          {s.note && <p className="text-ink-faint">{s.note}</p>}
+        </li>
+      ))}
+      {working && (
+        <li className="flex items-center gap-2 text-ink-faint">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blueprint" />
+          {steps.length ? "Thinking about the next step" : "Planning"}
+        </li>
+      )}
+    </ol>
   );
 }
 

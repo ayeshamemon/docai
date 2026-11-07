@@ -26,6 +26,7 @@ Note: local Qdrant allows ONE process. While the server runs, the CLI scripts
 """
 
 import json
+import queue
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -223,7 +224,7 @@ def document_status(doc_id: str):
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1)
     doc_id: str | None = None                  # None = search all documents
-    mode: Literal[tuple(TEXT_MODES + ["graph+rerank"])] = "rerank"   # graph+rerank = GraphRAG (Step 5)
+    mode: Literal[tuple(TEXT_MODES + ["graph+rerank", "agent"])] = "rerank"   # GraphRAG / agentic RAG
     k: int = Field(TOP_K, ge=1, le=20)
     images: int = Field(DEFAULT_IMAGES, ge=0, le=5)
 
@@ -232,13 +233,41 @@ def source_view(h: dict) -> dict:
     """What the UI needs to show a citation (no local file paths)."""
     if h["type"] == "page":
         return {"kind": "page", "doc_id": h["doc_id"], "page": h["page"],
-                "reason": h.get("reason"), "score": h["score"]}
+                "reason": h.get("reason"), "score": h.get("score")}
     return {"kind": "chunk", "doc_id": h["doc_id"], "chunk_id": h["chunk_id"],
-            "type": h["type"], "heading": h["heading"], "pages": h["pages"],
-            "boxes": h["boxes"],                       # for highlighting in the PDF
-            "text": h["text"][:600], "score": h["score"],
+            "type": h["type"], "heading": h.get("heading"), "pages": h["pages"],
+            "boxes": h.get("boxes", []),                       # for highlighting in the PDF
+            "text": h["text"][:600], "score": h.get("score"),
             "from_graph": bool(h.get("from_graph")),      # added by the graph walk (graph+rerank)
             "graph_why": h.get("graph_why")}               # e.g. "P100 GPU -> big models: trained on"
+
+
+def step_view(st: dict) -> dict:
+    """One agent round, as the UI shows it live."""
+    return {"round": st.get("round"), "thought": st.get("thought", ""), "tool": st.get("tool", ""),
+            "arg": st.get("arg", ""), "chunks": len(st.get("result_chunks") or []),
+            "pages": st.get("result_pages") or [], "note": st.get("result") if st.get("tool") != "answer" else None}
+
+
+def run_agent_streaming(question: str, doc_id: str):
+    """Run the agent in a thread; yield ("step", step) while it works, then ("result", (hits, pages))."""
+    from agent.agent import Agent
+    q: queue.Queue = queue.Queue()
+
+    def work():
+        try:
+            with qdrant_lock:                          # the agent's tools use the shared Qdrant
+                out = Agent(doc_id, state["qdrant"], on_step=lambda st: q.put(("step", st))).run(question)
+            q.put(("result", (out["hits"], out["pages"])))
+        except Exception as e:                         # e.g. Gemini unavailable
+            q.put(("error", str(e)))
+
+    threading.Thread(target=work, daemon=True).start()
+    while True:
+        kind, payload = q.get()
+        yield kind, payload
+        if kind in ("result", "error"):
+            return
 
 
 def sse(event: str, data) -> str:
@@ -256,12 +285,27 @@ def chat(req: ChatRequest):
             raise HTTPException(409, f"document is not ready yet (stage: {stage})")
         if req.mode == "graph+rerank" and not (PROCESSED / req.doc_id / "graph" / "graph.json").exists():
             raise HTTPException(409, "this document has no graph yet (run graph.extract and graph.build)")
+    elif req.mode == "agent":
+        raise HTTPException(400, "agent mode needs a document")
 
     def stream():
         t0 = time.time()
-        with qdrant_lock:                              # 1. retrieve (shared Qdrant)
-            hits, pages = retrieve(req.question, req.doc_id, req.k, req.mode, req.images,
-                                   client=state["qdrant"])
+        if req.mode == "agent":                        # 1a. agent: several tool calls, streamed live
+            hits, pages = [], []
+            for kind, payload in run_agent_streaming(req.question, req.doc_id):
+                if kind == "step":
+                    yield sse("step", step_view(payload))
+                elif kind == "result":
+                    hits, pages = payload
+                else:
+                    yield sse("error", payload)
+                    yield sse("done", {"retrieve_s": round(time.time() - t0, 1),
+                                       "first_token_s": None, "total_s": round(time.time() - t0, 1)})
+                    return
+        else:
+            with qdrant_lock:                          # 1b. retrieve (shared Qdrant)
+                hits, pages = retrieve(req.question, req.doc_id, req.k, req.mode, req.images,
+                                       client=state["qdrant"])
         t_retrieve = time.time() - t0
         yield sse("sources", [source_view(h) for h in hits + pages])
 

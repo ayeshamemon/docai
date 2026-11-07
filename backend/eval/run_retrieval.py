@@ -37,7 +37,9 @@ VISUAL_CATEGORIES = {"chart", "scan-faded", "scan-clean"}
 
 
 def load_questions():
-    return [json.loads(l) for l in QUESTIONS.read_text().splitlines() if l.strip()]
+    """Questions with something to retrieve (the "not in the document" ones are answer-eval only)."""
+    qs = [json.loads(l) for l in QUESTIONS.read_text().splitlines() if l.strip()]
+    return [q for q in qs if q.get("answerable") is not False]
 
 
 def check(questions):
@@ -60,7 +62,8 @@ def check(questions):
                 print(f"  {q['id']:<5} ⚠️  keyword {kw!r} is in {n} chunks (too common)")
         # a multi-hop question must really need two places: no single chunk may hold every part
         kws = q.get("keywords") or []
-        if len(kws) > 1 and any(all(k.lower() in c["text"].lower() for k in kws) for c in chunks):
+        if (q["category"].startswith("multi-hop") and len(kws) > 1
+                and any(all(k.lower() in c["text"].lower() for k in kws) for c in chunks)):
             print(f"  {q['id']:<5} ⚠️  one chunk holds every part {kws}: not really multi-hop")
     print("[check] all keywords found" if ok else "[check] fix the lines above")
     return ok

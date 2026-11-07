@@ -40,6 +40,27 @@ const HARD_CASES = [
     page: 3,
     note: "Every page is treated as a scan: OCR for the text, page images for everything else.",
   },
+  {
+    kind: "Questions in steps",
+    doc: "Apple 10-K, Agent mode",
+    q: "Which product grew fastest in 2026, and why?",
+    a: "iPhone, +21%, due to higher net sales of Pro models",
+    page: 29,
+    note: "The reason is only findable once you know the answer is iPhone. The agent finds the product first, then searches for why.",
+  },
+];
+
+const MODES = [
+  ["Normal", "Hybrid search and a reranker, plus page images for charts and scans.", "Single facts: 96% correct"],
+  ["Graph", "Normal search plus a walk on an entity graph of the document, to reach a linked fact on another page.", "Linked facts: 50% → 67%"],
+  ["Agent", "Plans, searches several times, reads around tables, finds exact text and calculates, one step at a time. You see each step live.", "Linked facts: 50% → 100%"],
+];
+
+const MULTI = [
+  ["Normal", "50%", "86%", "50%"],
+  ["Graph", "67%", "93%", "67%"],
+  ["Query decomposition", "75%", "100%", "75%"],
+  ["Agent", "100%", "93%", "83%"],
 ];
 
 const STEPS = [
@@ -66,6 +87,7 @@ export default function Landing() {
           <Logo />
           <nav className="flex items-center gap-1 text-sm text-ink-soft sm:gap-3">
             <a href="#how" className="hidden rounded px-2 py-1 hover:text-ink sm:inline">How it works</a>
+            <a href="#modes" className="hidden rounded px-2 py-1 hover:text-ink sm:inline">Modes</a>
             <a href="#results" className="hidden rounded px-2 py-1 hover:text-ink sm:inline">Results</a>
             <a href={REPO} target="_blank" rel="noreferrer" className="rounded px-2 py-1 hover:text-ink">GitHub</a>
             <ThemeToggle className="text-ink-soft hover:bg-desk hover:text-ink" />
@@ -145,6 +167,25 @@ export default function Landing() {
         </ol>
       </section>
 
+      {/* three modes */}
+      <section id="modes" className="scroll-mt-16 border-t border-rule bg-desk/60">
+        <div className="mx-auto max-w-6xl px-5 py-16">
+          <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">Three ways to answer</h2>
+          <p className="mt-3 max-w-2xl text-ink-soft">
+            Pick a mode in the chat header. All three use the same answer step, citations and highlighting.
+          </p>
+          <div className="mt-10 grid gap-8 md:grid-cols-3 md:gap-6">
+            {MODES.map(([name, text, stat]) => (
+              <div key={name} className="border-t-2 border-blueprint pt-4">
+                <h3 className="font-semibold">{name}</h3>
+                <p className="mt-2 text-sm leading-relaxed text-ink-soft">{text}</p>
+                <p className="mt-3 text-sm font-medium tabular-nums">{stat}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* results */}
       <section id="results" className="scroll-mt-16 border-t border-rule">
         <div className="mx-auto grid max-w-6xl gap-10 px-5 py-16 md:grid-cols-[1fr_1.2fr]">
@@ -180,6 +221,40 @@ export default function Landing() {
                     </tr>
                   );
                 })}
+              </tbody>
+            </table>
+          </div>
+
+          <div>
+            <h3 className="text-xl font-semibold tracking-tight">Questions that need more than one fact</h3>
+            <p className="mt-4 leading-relaxed text-ink-soft">
+              Bridge questions need the first fact to know what to look for next; compare questions
+              name both facts; hard questions chain facts from different pages and need a calculation.
+              Correct answers per mode.
+            </p>
+            <p className="mt-4 text-sm leading-relaxed text-ink-faint">
+              No mode gave a single wrong answer on any of the 103 test questions.
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-ink-faint">
+                <tr className="border-b border-rule">
+                  <th className="py-2 pr-4 font-medium">Mode</th>
+                  <th className="py-2 pr-4 font-medium">Bridge (12)</th>
+                  <th className="py-2 pr-4 font-medium">Compare (14)</th>
+                  <th className="py-2 font-medium">Hard (12)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {MULTI.map(([mode, b, c, h], i) => (
+                  <tr key={mode} className={`border-b border-rule ${i === MULTI.length - 1 ? "font-semibold" : ""}`}>
+                    <td className="py-3 pr-4">{mode}</td>
+                    <td className="py-3 pr-4 tabular-nums">{b}</td>
+                    <td className="py-3 pr-4 tabular-nums">{c}</td>
+                    <td className="py-3 tabular-nums">{h}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

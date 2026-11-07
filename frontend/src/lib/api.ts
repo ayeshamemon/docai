@@ -120,7 +120,7 @@ export const pageImageUrl = (docId: string, page: number) => `${API}/documents/$
 
 // ---------- chat (Step 3.1 /chat, streamed as Server-Sent Events) ----------
 
-export type Mode = "rerank" | "hybrid" | "dense" | "bm25" | "graph+rerank";
+export type Mode = "rerank" | "hybrid" | "dense" | "bm25" | "graph+rerank" | "agent";
 
 export interface ChunkSource {
   kind: "chunk";
@@ -146,6 +146,17 @@ export interface PageSource {
 
 export type Source = ChunkSource | PageSource;
 
+/** One round of the agent (Agent mode), streamed live while it works. */
+export interface AgentStep {
+  round: number;
+  thought: string;
+  tool: string;          // text_search, graph_search, visual_search, read_next, find_exact, calculate, answer
+  arg: string;
+  chunks: number;        // passages this step found
+  pages: number[];       // page images this step found
+  note?: string | null;  // e.g. "already ran this search" (a rule the code enforced)
+}
+
 export interface Timing {
   retrieve_s: number;
   first_token_s: number | null;
@@ -161,6 +172,7 @@ export interface ChatRequest {
 
 export interface ChatHandlers {
   onSources: (s: Source[]) => void;
+  onStep?: (s: AgentStep) => void;
   onToken: (text: string) => void;
   onDone: (t: Timing) => void;
   onError: (message: string) => void;
@@ -211,6 +223,7 @@ export async function streamChat(req: ChatRequest, h: ChatHandlers, signal?: Abo
         if (!data) continue;
         const payload = JSON.parse(data);
         if (event === "sources") h.onSources(payload);
+        else if (event === "step") h.onStep?.(payload);
         else if (event === "token") h.onToken(payload);
         else if (event === "done") h.onDone(payload);
         else if (event === "error") h.onError(payload);

@@ -42,6 +42,7 @@ HERE = Path(__file__).parent
 QUESTIONS = HERE / "questions.jsonl"
 ANSWERS = HERE / "answers.jsonl"   # rerank; other modes: answers_<mode>.jsonl
 MODE = "rerank"
+K = None                            # chunks per answer (None = the app default, 5)
 REVIEW = HERE / "human_review.jsonl"
 RESULTS_CSV = HERE / "results_answers.csv"
 
@@ -153,7 +154,22 @@ def with_retries(fn, what: str, tries: int = 4):
 
 def answer_question(q: dict, client) -> dict:
     t0 = time.time()
-    hits, pages = retrieve(q["question"], q["doc"], mode=MODE, client=client)   # same as the app
+    agent_info = {}
+    if MODE == "agent":                       # agentic RAG: several tool calls, then the same answer step
+        from agent.agent import retrieve_agent
+        hits, pages, out = retrieve_agent(q["question"], q["doc"], client)
+        agent_info = {"agent_rounds": len(out["steps"]),
+                      "agent_steps": [{k: st.get(k) for k in ("round", "thought", "tool", "arg",
+                                                              "result_chunks", "result_pages")}
+                                      for st in out["steps"]],
+                      "agent_checklist": out["checklist"]}
+    elif MODE == "decompose":                 # control: several queries written up front, no loop
+        from agent.decompose import retrieve_decompose
+        hits, pages, info = retrieve_decompose(q["question"], q["doc"], client)
+        agent_info = {"decompose_queries": info["queries"]}
+    else:
+        kw = {"k": K} if K else {}
+        hits, pages = retrieve(q["question"], q["doc"], mode=MODE, client=client, **kw)   # same as the app
     t_retrieve = time.time() - t0
     text = "".join(generate(build_contents(q["question"], hits, pages)))
     return {
@@ -166,6 +182,8 @@ def answer_question(q: dict, client) -> dict:
         **citation_checks(q, text, hits, pages),
         "retrieve_s": round(t_retrieve, 1),
         "total_s": round(time.time() - t0, 1),
+        "num_chunks": len(hits),
+        **agent_info,
     }
 
 
@@ -185,6 +203,14 @@ def judge(row: dict, judge_model: str) -> dict:
     except Exception:
         return {"verdict": None, "reason": f"unparseable judge output: {resp.text[:120]}",
                 "judge_model": judge_model}
+
+
+def score_unanswerable(row: dict) -> dict:
+    """The answer key says "not in the document". Saying so is CORRECT (the judge may call it
+    "abstained"); giving an invented figure is WRONG."""
+    if row.get("verdict") == "abstained":
+        return {**row, "verdict": "correct", "reason": "correctly said it is not in the document. " + row["reason"]}
+    return row
 
 
 # ---------- summary ----------
@@ -226,6 +252,12 @@ def summarize(rows: list[dict]):
               f"{pct(c['wrong'], len(g)):>7}{pct(c['abstained'], len(g)):>8}   "
               f"{pct(sum(ev), len(ev)):>9}{pct(sum(gr), len(gr)):>9}{avg:>7.1f}")
     print("\nevidence = a cited page holds the answer · grounded = every cited page was given to the model")
+    agent_rows = [r for r in rows if r.get("agent_rounds")]
+    if agent_rows:
+        n = len(agent_rows)
+        print(f"agent: {sum(r['agent_rounds'] for r in agent_rows) / n:.1f} rounds and "
+              f"{sum(r.get('num_chunks', 0) for r in agent_rows) / n:.1f} chunks per question on average "
+              f"(normal modes: 5 chunks)")
 
     with open(RESULTS_CSV, "w", newline="") as f:
         cols = ["id", "category", "question", "reference", "answer", "verdict", "reason",
@@ -286,13 +318,16 @@ if __name__ == "__main__":
     ap.add_argument("--review", type=int, metavar="N", help="grade N random answers yourself")
     ap.add_argument("--mode", default="rerank",
                     help="retrieval mode, e.g. graph+rerank (results go to answers_<mode>.jsonl)")
+    ap.add_argument("--k", type=int, help="chunks per answer (control experiment, e.g. 7)")
     ap.add_argument("--answer-model", default=ANSWER_MODEL)
     ap.add_argument("--judge-model", default=JUDGE_MODEL)
     args = ap.parse_args()
 
-    if args.mode != "rerank":
+    if args.mode != "rerank" or args.k:
         MODE = args.mode
-        ANSWERS = HERE / f"answers_{args.mode.replace('+', '_').replace('-', '_')}.jsonl"
+        K = args.k
+        suffix = args.mode.replace('+', '_').replace('-', '_') + (f"_k{args.k}" if args.k else "")
+        ANSWERS = HERE / f"answers_{suffix}.jsonl"
     if args.review:
         review(args.review)
         raise SystemExit
@@ -324,6 +359,8 @@ if __name__ == "__main__":
                     row = answer_question(q, client)
                     time.sleep(PAUSE_S)
                 row = {**row, **judge(row, args.judge_model)}
+                if q.get("answerable") is False:
+                    row = score_unanswerable(row)
             except Exception as e:
                 print(f"  {q['id']:<5} ❌ {type(e).__name__}: {str(e)[:120]}  (run again to retry)")
                 if row and row.get("answer"):
